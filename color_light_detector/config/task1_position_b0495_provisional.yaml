@@ -1,0 +1,65 @@
+# V7.12.1 MOUNT45: downward angle confirmed by user on 2026-09-17.
+# Remaining TODO items are assumptions, not completed measurements.
+# XYZ test estimates appear under position.estimate; position.valid stays false.
+# Actual height AND attitude must arrive in timestamped PoseStamped/Odometry.
+allow_provisional: true
+calibration_file: task1_camera_b0495_nominal.yaml
+calibration_confirmed: false       # TODO: measured K/D, not the nominal file
+mount_confirmed: false             # 45 deg confirmed; TODO: yaw/roll, image orientation AND camera offset
+height_reference_confirmed: false # TODO: identify flight altitude datum
+time_alignment_confirmed: false   # TODO: measure image latency and verify pose clock alignment
+height_reference: ASSUMED_TAKEOFF_ORIGIN_TARGET_PLANE
+
+# UAV equipment list: Holybro Pixhawk 6X Mini + M9N GPS; RTK marked not in use.
+# Firmware/bridge, topic, height datum and clock are NOT established by this list.
+# TODO: replace with the flight bridge's real topic/type/frame conventions.
+pose_topic: /mavros/local_position/pose
+pose_type: pose_stamped
+pose_frame_id: map
+output_frame_id: map
+# Stable identifier for this local ENU origin. Replace only after the flight
+# bridge origin/reset behavior is measured and documented.
+map_origin_id: UNCONFIRMED
+pose_body_frame_id: base_link
+body_frame_id: base_link
+camera_frame_id: arducam_optical_frame
+pose_convention: ENU_FLU
+pose_has_xy: false                 # TODO: enable only for verified map XY
+
+# User-confirmed downward angle. 0=forward, 90=straight down.
+# Image right points to aircraft right; at 90, image top points to aircraft front.
+mount_rotation_mode: downward_angle
+camera_downward_angle_deg: 45.0    # Confirmed 2026-09-17; full extrinsics still pending
+body_from_optical_xyz_m: [0.0, 0.0, 0.0] # TODO: optical center in body FLU, meters
+
+# LIVE pose z is used; aircraft altitude is NEVER hardcoded here.
+# TODO: target elevation in the same datum as pose z (ENU, up-positive).
+# Temporary assumption only: target plane is at the takeoff origin's z=0.
+# If takeoff is A m above water and lamp is B m above water, set plane_z_m=B-A.
+plane_z_m: 0.0                    # TODO: physical top-plate CENTER elevation, not water/ground
+pixel_anchor_xy: [0.5, 0.5]        # Legacy fallback only; new node supplies measured top-plate center
+allow_calibration_resize: false
+
+# TODO: measure camera readout/USB delay and clock alignment on the actual Jetson.
+image_time_offset_seconds: 0.0
+pose_time_offset_seconds: 0.0
+max_image_age_seconds: 0.5
+max_pose_clock_skew_seconds: 0.5
+max_pose_gap_seconds: 0.12
+nearest_pose_seconds: 0.04
+min_motion_quality: 0.60
+min_bbox_side_pixels: 12.0
+min_downward_cosine: 0.25
+min_height_above_plane_m: 0.3
+max_range_m: 150.0
+
+# Engineering assumptions only; nominal intrinsics/mount errors are UNMEASURED.
+# These values do not establish measured accuracy, especially for provisional XYZ.
+pixel_sigma_px: 2.0
+anchor_sigma_fraction: 0.04
+pose_position_sigma_m: 0.5
+pose_angle_sigma_deg: 2.0
+plane_height_sigma_m: 0.15
+max_horizontal_sigma_m: 5.0
+max_pose_speed_m_s: 30.0
+max_pose_angular_speed_deg_s: 300.0

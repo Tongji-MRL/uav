@@ -1,0 +1,29 @@
+# B0495 first-test camera model. TODO: replace with measured K/D.
+# Official source, technical parameters on PDF page 3:
+# https://blog.arducam.com/downloads/datasheet/B0495_AR0234_Global_Shutter_USB3.0_Camera_Module_Datasheet.pdf
+# EFL 3.6 mm / pixel pitch 0.003 mm = 1200 px; principal point assumed centered.
+# The listed 82 x 66 degree FOV is inconsistent with this pinhole model.
+# D=0 means UNKNOWN DISTORTION IGNORED, not measured zero distortion.
+# Assumes original lens, full sensor, fixed focus, raw unrectified image.
+calibration_is_approximate: true
+calibration_source: ARDUCAM_B0495_DATASHEET_EFL_PIXEL_PITCH_NOMINAL
+image_width: 1920
+image_height: 1200
+camera_name: arducam_b0495_nominal
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [1200.0, 0.0, 959.5, 0.0, 1200.0, 599.5, 0.0, 0.0, 1.0]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [0.0, 0.0, 0.0, 0.0, 0.0]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [1200.0, 0.0, 959.5, 0.0, 0.0, 1200.0, 599.5, 0.0, 0.0, 0.0, 1.0, 0.0]

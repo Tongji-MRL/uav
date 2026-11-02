@@ -1,0 +1,13 @@
+arducam_camera:
+  ros__parameters:
+    video_device: /dev/video0
+    camera_mode: max
+    camera_frame_id: arducam_optical_frame
+    image_topic: /arducam/image_raw
+    native_image_topic: /arducam/image_native
+    camera_info_topic: /arducam/camera_info
+    native_camera_info_topic: /arducam/camera_info_native
+    status_topic: /arducam/status_json
+    publish_image_size: [960, 600]
+    publish_fps: 5.0
+    calibration_file: ''

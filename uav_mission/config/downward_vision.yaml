@@ -1,0 +1,75 @@
+downward_vision:
+  runtime:
+    # PT inference is intentionally slower than the flight-control loop.
+    inference_rate_hz: 3.0
+
+  topics:
+    vision_control: /tongji_mrl/tsky/downward_vision_control
+    rgb_image: /oak/rgb/image_raw
+    depth_image: /oak/stereo/image_raw
+    vehicle_local_position: /fmu/out/vehicle_local_position_v1
+    vehicle_attitude: /fmu/out/vehicle_attitude
+    map_result: /tongji_mrl/tsky/map_targets_ned
+    task3_result: /tongji_mrl/tsky/task3_target_gripper
+
+  perception:
+    image_size: 640
+    device: cuda:0
+    depth_unit: mm
+    invalid_depth_values: [0]
+    depth_aligned_to_rgb: true
+    depth_sync_tolerance_sec: 0.10
+    depth_roi_fraction: 0.40
+    depth_min_m: 0.05
+    depth_max_m: 20.0
+
+  # Replace these paths and object types with the actual Orin model files.
+  models:
+    map:
+      - object_type: platform
+        path: /home/robotx/robotx_ws/perception/delivery_platform_v2_best.pt
+        confidence: 0.25
+
+    task3:
+      - object_type: tin
+        path: /home/robotx/robotx_ws/perception/supply_can_v2_best.pt
+        confidence: 0.25
+
+      - object_type: platform
+        path: /home/robotx/robotx_ws/perception/delivery_platform_v2_best.pt
+        confidence: 0.25
+
+      - object_type: circle
+        path: /home/robotx/robotx_ws/perception/delivery_circle_v2_best.pt
+        confidence: 0.25
+
+
+  # Replace with the calibrated intrinsics of the downward RGB camera.
+  camera:
+    rgb_width: 1280
+    rgb_height: 720
+    fx: 921.5900268554688
+    fy: 921.5924682617188
+    cx: 635.8539428710938
+    cy: 366.5133361816406
+    distortion: []
+    depth_min_m: 0.05
+    depth_max_m: 20.0
+
+  # These identity matrices are placeholders and must be calibrated.
+  # T_body_camera maps camera optical coordinates into PX4 body FRD.
+  # T_gripper_camera maps camera optical coordinates into gripper coordinates.
+  transforms:
+    # 相机光学坐标系 -> PX4机体FRD
+    T_body_camera:
+      - [0.0, 1.0, 0.0, 0.06607]
+      - [-1.0, 0.0, 0.0, 0.0]
+      - [0.0, 0.0, 1.0, 0.11643]
+      - [0.0, 0.0, 0.0, 1.0]
+
+    # 相机光学坐标系 -> 夹爪坐标系
+    T_gripper_camera:
+      - [0.0, 1.0, 0.0, 0.06607]
+      - [1.0, 0.0, 0.0, 0.0]
+      - [0.0, 0.0, -1.0, 0.13409]
+      - [0.0, 0.0, 0.0, 1.0]

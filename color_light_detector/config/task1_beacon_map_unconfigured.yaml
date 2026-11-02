@@ -1,0 +1,44 @@
+# Task 1 beacon map wiring. These values are placeholders, not a surveyed map.
+# A valid UAV-local position is not a shared-map position until the origin and
+# transform have been measured and confirmed with the USV planning team.
+input_topic: /task1/beacons/results_json
+output_topic: /task1/beacons/map_json
+snapshot_file: ~/robotx_new_beacon_arducam45/beacon_map.json
+# Keep the live database outside the install/package tree so deployments do not
+# replace it. Use SQLite online backup or stop the node before copying it.
+persistent_db_file: ~/robotx_new_beacon_arducam45/beacon_map.sqlite3
+
+# Source positions are UAV-local ENU from Task 1 localization. The word "map"
+# here does not establish a common origin with the USV or a geodetic datum.
+source_frame_id: map
+shared_frame_id: task1_shared_enu
+source_origin_id: UNCONFIRMED
+shared_origin_id: UNCONFIRMED
+transform_id: UNCONFIRMED
+transform_confirmed: false
+translation_xyz_m: [0.0, 0.0, 0.0]
+yaw_deg: 0.0
+expected_pose_reset_count: null
+
+# Provisional freshness and spatial association policy. These are deliberately
+# conservative and require validation with real flight/USV measurements.
+position_ttl_s: 2.0
+state_ttl_s: 2.0
+max_input_age_s: 1.0
+# Bound the current ROS snapshot; permanent history stays in SQLite.
+track_retention_s: 10.0
+# A valid upstream position still needs a finite uncertainty below this limit.
+# Keep this aligned with the planning team's measured acceptance threshold.
+max_position_sigma_m: 0.75
+persistent_max_sigma_m: 0.75
+persistent_min_observations: 2
+persistent_stability_window_s: 3.0
+# A new permanent record needs spatially tight samples over real elapsed time.
+persistent_stability_radius_m: 0.35
+persistent_min_stability_duration_s: 0.5
+persistent_match_radius_m: 1.5
+persistent_match_margin_m: 0.5
+# Once linked, unchanged geometry/state is archived at this interval instead
+# of every 15 FPS camera frame. State changes and position jumps write at once.
+persistent_linked_observation_interval_s: 0.5
+simulation: false

@@ -1,0 +1,21 @@
+uav_pontoon_v37_bridge:
+  ros__parameters:
+    source_dir: /home/yangxy/robotx_ws/src/robotx_perception/robotx_uav_perception/robotx_uav_perception/task3_pontoon
+    image_topic: /uav/camera/image_rect_color
+    camera_info_topic: /uav/camera/camera_info
+    aligned_depth_topic: /uav/camera/aligned_depth_to_color/image_raw
+    observation_topic: /robotx/perception/uav/pontoon/observation
+    status_topic: /robotx/perception/uav/pontoon/status
+    world_frame: map_ned
+    max_side: 480
+    expected_branches: 4
+    use_aligned_depth: true
+    max_depth_age_sec: 0.08
+    enable_plane_projection: false
+    plane_height_verified: false
+    plane_z_ned_m: 0.0
+    max_plane_range_m: 50.0
+    branch_ids_verified: false
+    uv_coordinates_verified: false
+    metric_calibration_verified: false
+    log_every_n_frames: 30
