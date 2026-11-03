@@ -93,6 +93,7 @@ class DetectionToGripper:
         )
 
         return {
+            # YOLO检测信息
             "type": str(
                 detection.get(
                     "object_type",
@@ -102,6 +103,23 @@ class DetectionToGripper:
             "color": str(detection.get("color", "None")),
             "state": str(detection.get("state", "static")),
             "id": detection.get("id"),
+            "confidence": float(
+                detection.get("confidence", 0.0) or 0.0
+            ),
+            "bbox_xyxy": detection.get("bbox_xyxy"),
+            "center_xy": center,
+
+            # 深度信息
+            "depth_median_m": depth_m,
+            "depth_valid_pixel_count": int(
+                detection.get(
+                    "depth_valid_pixel_count",
+                    0,
+                ) or 0
+            ),
+
+            # 坐标转换过程
+            "camera_optical_position_m": point_camera,
             "gripper_position": point_gripper,
         }
 

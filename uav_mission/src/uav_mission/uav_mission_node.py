@@ -267,6 +267,14 @@ class UavMissionNode(Node):
         self.vertical_move_xy: list[float] | None = None
         self.hold_position_ned: list[float] | None = None
         # ==============================================================
+        # TEST 数据
+        # ==============================================================
+        self.map_debug_last_log_time = 0.0
+        self.map_finish_log_written = False
+
+        self.last_published_position_sp = None
+        self.vehicle_nav_state = None
+        # ==============================================================
         # 3. TASK1 数据
         # ==============================================================
         self.task1_begin_time: float | None = None
@@ -760,6 +768,18 @@ class UavMissionNode(Node):
     # 所有订阅回调：只解析并缓存数据，不直接控制飞行
     # ==================================================================
     def _on_vehicle_status(self, msg: VehicleStatus) -> None:
+        # -------------
+        new_nav_state = int(msg.nav_state)
+
+        if new_nav_state != self.vehicle_nav_state:
+            self.get_logger().warning(
+                f"PX4 nav_state changed: "
+                f"{self.vehicle_nav_state} -> {new_nav_state}; "
+                f"position={self.local_position}"
+            )
+
+        self.vehicle_nav_state = new_nav_state
+        #-----------------
         if self.vehicle_in_offboard:
             self.offboard_was_active = True
 
@@ -1282,8 +1302,34 @@ class UavMissionNode(Node):
         dy = target[1] - self.local_position[1]
         distance = math.hypot(dx, dy)
 
+        # ---------
+        now = time.monotonic()
+
+        if now - self.map_debug_last_log_time >= 1.0:
+            self.map_debug_last_log_time = now
+
+            self.get_logger().info(
+                f"MAP DEBUG: "
+                f"index={self.map_route_index}/{len(self.map_route)}, "
+                f"current_ned={self.local_position}, "
+                f"target_xy={target}, "
+                f"distance={distance:.3f}, "
+                f"published_sp={self.last_published_position_sp}"
+            )
+        # ---------
+
         # 到达当前航点，切换到下一个航点
         if distance <= self.waypoint_tolerance_m:
+            # ----------
+            self.get_logger().info(
+                f"MAP waypoint reached: "
+                f"index={self.map_route_index}, "
+                f"current_ned={self.local_position}, "
+                f"target_xy={target}, "
+                f"distance={distance:.3f}"
+            )
+            # ----------
+        
             self.map_route_index += 1
 
             # 所有航点已经完成
@@ -1314,6 +1360,22 @@ class UavMissionNode(Node):
         )
         
     def _map_finished(self) -> None:
+        # ----------------
+        if not self.map_finish_log_written:
+            self.map_finish_log_written = True
+
+            self.get_logger().warning(
+                f"MAP FINISH DEBUG: "
+                f"current_ned={self.local_position}, "
+                f"route_index={self.map_route_index}, "
+                f"last_route_target="
+                f"{self.map_route[-1] if self.map_route else None}, "
+                f"last_published_sp={self.last_published_position_sp}, "
+                f"nav_state={self.vehicle_nav_state}, "
+                f"in_offboard={self.vehicle_in_offboard}"
+            )
+        # ----------------
+
         # MAP完成后发布视觉启动结束
         self._publish_vision_mode("OFF", [])
         # MAP完成后持续保持静止
@@ -3160,6 +3222,15 @@ class UavMissionNode(Node):
         new_mission: str,
         initial_state: str,
     ) -> None:
+    # --------------
+        self.get_logger().error(
+            f"Offboard exit detected: "
+            f"nav_state={self.vehicle_nav_state}, "
+            f"current_ned={self.local_position}, "
+            f"last_published_sp={self.last_published_position_sp}, "
+            f"route_index={self.map_route_index}"
+        )
+    # --------------
         if self.local_position is not None:
             self.position_interpolator.reset(
                 self.local_position
@@ -3529,7 +3600,13 @@ class UavMissionNode(Node):
             else math.nan
         )
         setpoint.yawspeed = math.nan
-
+        # ----------------
+        self.last_published_position_sp = [
+            float(position[0]),
+            float(position[1]),
+            float(position[2]),
+        ]
+        # ----------------
         self.trajectory_setpoint_pub.publish(setpoint)
     
     # ==================================================================

@@ -151,6 +151,31 @@ class DownwardVisionNode(Node):
             ),
             10,
         )
+
+        
+        # 很多消息的发布
+        self.map_debug_pub = self.create_publisher(
+            String,
+            str(
+                topics.get(
+                    "map_debug_result",
+                    "/tongji_mrl/tsky/map_detection_debug",
+                )
+            ),
+            10,
+        )
+
+        self.task3_debug_pub = self.create_publisher(
+            String,
+            str(
+                topics.get(
+                    "task3_debug_result",
+                    "/tongji_mrl/tsky/task3_detection_debug",
+                )
+            ),
+            10,
+        )
+
         self.task3_result_pub = self.create_publisher(
             String,
             str(
@@ -311,23 +336,151 @@ class DownwardVisionNode(Node):
             # 转换为gripper坐标并发布
             self._publish_task3_result(detections)
 
-    def _publish_map_result(self, detections: dict[str, Any]) -> None:
-        if self.position_ned is None or self.attitude_q is None:
+    def _publish_map_result(
+        self,
+        detections: dict[str, Any],
+    ) -> None:
+        if (
+            self.position_ned is None
+            or self.attitude_q is None
+        ):
             return
 
-        result = self.map_to_ned.transform(
+        transformed = self.map_to_ned.transform(
             detections,
             self.position_ned,
             self.attitude_q,
         )
-        result["task"] = "MAP"
-        result["frame"] = "local_ned"
-        self._publish_json(self.map_result_pub, result)
 
-    def _publish_task3_result(self, detections: dict[str, Any]) -> None:
-        result = self.task3_to_gripper.transform(detections)
-        result["task"] = "TASK3"
-        self._publish_json(self.task3_result_pub, result)
+        # 保持原来的MAP输出格式，避免影响主节点
+        map_result = {
+            "task": "MAP",
+            "frame": "local_ned",
+            "objects": [
+                {
+                    "type": item["type"],
+                    "color": item["color"],
+                    "state": item["state"],
+                    "id": item["id"],
+                    "NED_position": item["NED_position"],
+                }
+                for item in transformed["objects"]
+            ],
+        }
+
+        self._publish_json(
+            self.map_result_pub,
+            map_result,
+        )
+
+        # 完整调试信息
+        debug_result = {
+            "task": "MAP_DEBUG",
+            "sequence": detections.get("sequence"),
+            "rgb_stamp": detections.get("rgb_stamp"),
+            "rgb_image_size": detections.get(
+                "rgb_image_size"
+            ),
+            "depth": detections.get("depth"),
+
+            # 原始YOLO和深度结果
+            "raw_detections": detections.get(
+                "detections",
+                [],
+            ),
+
+            # 本次转换使用的无人机位姿
+            "vehicle_position_ned": list(
+                self.position_ned
+            ),
+            "vehicle_attitude_q": list(
+                self.attitude_q
+            ),
+
+            # 各坐标转换阶段
+            "transformed_objects": transformed.get(
+                "objects",
+                [],
+            ),
+        }
+
+        self._publish_json(
+            self.map_debug_pub,
+            debug_result,
+        )
+
+    def _publish_task3_result(
+        self,
+        detections: dict[str, Any],
+    ) -> None:
+        transformed = self.task3_to_gripper.transform(
+            detections
+        )
+
+        # 保持原有TASK3输出格式
+        task3_result = {
+            "task": "TASK3",
+            "frame": "gripper",
+            "objects": [
+                {
+                    "type": item["type"],
+                    "color": item["color"],
+                    "state": item["state"],
+                    "id": item["id"],
+                    "gripper_position": (
+                        item["gripper_position"]
+                    ),
+                }
+                for item in transformed.get("objects", [])
+            ],
+        }
+
+        self._publish_json(
+            self.task3_result_pub,
+            task3_result,
+        )
+
+        # TASK3独立调试输出
+        debug_result = {
+            "task": "TASK3_DEBUG",
+            "frame": "gripper",
+
+            "sequence": detections.get("sequence"),
+            "rgb_stamp": detections.get("rgb_stamp"),
+            "rgb_image_size": detections.get(
+                "rgb_image_size"
+            ),
+            "depth": detections.get("depth"),
+
+            # YOLO原始结果及深度
+            "raw_detections": detections.get(
+                "detections",
+                [],
+            ),
+
+            # 当前PX4位姿，仅用于排查时间同步
+            "vehicle_position_ned": (
+                list(self.position_ned)
+                if self.position_ned is not None
+                else None
+            ),
+            "vehicle_attitude_q": (
+                list(self.attitude_q)
+                if self.attitude_q is not None
+                else None
+            ),
+
+            # 相机坐标转夹爪坐标的结果
+            "transformed_objects": transformed.get(
+                "objects",
+                [],
+            ),
+        }
+
+        self._publish_json(
+            self.task3_debug_pub,
+            debug_result,
+        )
 
     @staticmethod
     def _publish_json(publisher: Any, payload: dict[str, Any]) -> None:

@@ -18,7 +18,7 @@ except ImportError:  # pragma: no cover - deployment dependency check
 
 BUOY_HSV_RANGES = {
     "red": (((0, 80, 50), (10, 255, 255)), ((170, 80, 50), (179, 255, 255))),
-    "green": (((35, 55, 40), (90, 255, 255)),),
+    "green": (((35, 55, 40), (80, 255, 255)),),
     "blue": (((95, 70, 35), (135, 255, 255)),),
 }
 
@@ -401,25 +401,58 @@ class MultiRgbdTargetDetector:
 
     @staticmethod
     def _classify_buoy_color(
-        rgb: np.ndarray, bbox: tuple[int, int, int, int]
+        rgb: np.ndarray,
+        bbox: tuple[int, int, int, int],
     ) -> tuple[str, float]:
         x1, y1, x2, y2 = bbox
         crop = rgb[y1:y2, x1:x2]
+
         if crop.size == 0:
-            return "red", 0.0
-        hsv = cv2.cvtColor(crop, cv2.COLOR_RGB2HSV)
+            return "None", 0.0
+
+        hsv = cv2.cvtColor(
+            crop,
+            cv2.COLOR_RGB2HSV,
+        )
+
         ratios: dict[str, float] = {}
+
         for color, ranges in BUOY_HSV_RANGES.items():
-            mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+            mask = np.zeros(
+                hsv.shape[:2],
+                dtype=np.uint8,
+            )
+
             for lower, upper in ranges:
                 mask |= cv2.inRange(
                     hsv,
                     np.asarray(lower, dtype=np.uint8),
                     np.asarray(upper, dtype=np.uint8),
                 )
-            ratios[color] = float(np.count_nonzero(mask)) / float(mask.size)
-        color = max(BUOY_HSV_RANGES, key=lambda name: ratios[name])
-        return color, ratios[color]
+
+            ratios[color] = (
+                float(np.count_nonzero(mask))
+                / float(mask.size)
+            )
+
+        ranked = sorted(
+            ratios.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+
+        best_color, best_ratio = ranked[0]
+        _, second_ratio = ranked[1]
+
+        # 三种颜色的覆盖比例都很低
+        if best_ratio < 0.20:
+            return "None", best_ratio
+
+        # 第一名和第二名过于接近
+        if best_ratio - second_ratio < 0.20:
+            return "None", best_ratio
+
+        return best_color, best_ratio
 
     def _attach_depth(
         self,

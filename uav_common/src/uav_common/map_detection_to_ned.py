@@ -187,14 +187,35 @@ class MapDetectionToNed:
         target_ned = [position_ned[index] + offset_ned[index] for index in range(3)]
         if not all(math.isfinite(value) for value in target_ned):
             return None
+
         return {
+            # YOLO检测信息
             "type": object_type,
             "color": str(detection.get("color", "None")),
             "state": str(detection.get("state", "static")),
             "id": object_id,
+            "confidence": float(
+                detection.get("confidence", 0.0) or 0.0
+            ),
+            "bbox_xyxy": detection.get("bbox_xyxy"),
+            "center_xy": center,
+
+            # 深度信息
+            "depth_median_m": depth_m,
+            "depth_valid_pixel_count": int(
+                detection.get(
+                    "depth_valid_pixel_count",
+                    0,
+                ) or 0
+            ),
+
+            # 各坐标转换阶段
+            "camera_optical_position_m": point_camera,
+            "body_frd_position_m": point_body,
+            "ned_offset_m": offset_ned,
             "NED_position": target_ned,
         }
-
+        
     def _pixel_depth_to_camera(
         self,
         u: float,

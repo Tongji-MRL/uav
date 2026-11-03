@@ -20,7 +20,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     launch_files = [
-        "downward_vision.launch.py",
+        "downward_vision2.launch.py",
         "px4_gripper_control.launch.py",
         "landing_gear_control.launch.py",
         "mission.launch.py",

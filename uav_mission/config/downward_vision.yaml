@@ -12,36 +12,48 @@ downward_vision:
     map_result: /tongji_mrl/tsky/map_targets_ned
     task3_result: /tongji_mrl/tsky/task3_target_gripper
 
+    map_debug_result: /tongji_mrl/tsky/map_detection_debug
+    task3_debug_result: /tongji_mrl/tsky/task3_detection_debug
+
   perception:
     image_size: 640
     device: cuda:0
     depth_unit: mm
     invalid_depth_values: [0]
     depth_aligned_to_rgb: true
-    depth_sync_tolerance_sec: 0.10
+    depth_sync_tolerance_sec: 0.05
     depth_roi_fraction: 0.40
     depth_min_m: 0.05
     depth_max_m: 20.0
+
+    pose_buffer_duration_sec: 5.0
+    pose_sync_tolerance_sec: 0.05
 
   # Replace these paths and object types with the actual Orin model files.
   models:
     map:
       - object_type: platform
         path: /home/robotx/robotx_ws/perception/delivery_platform_v2_best.pt
-        confidence: 0.25
-
+        confidence: 0.7
+      - object_type: tin
+        path: /home/robotx/robotx_ws/perception/supply_can_v2_best.pt
+        confidence: 0.7
+      - object_type: circle
+        path: /home/robotx/robotx_ws/perception/delivery_circle_v2_best.pt
+        confidence: 0.7
+        
     task3:
       - object_type: tin
         path: /home/robotx/robotx_ws/perception/supply_can_v2_best.pt
-        confidence: 0.25
+        confidence: 0.7
 
       - object_type: platform
         path: /home/robotx/robotx_ws/perception/delivery_platform_v2_best.pt
-        confidence: 0.25
+        confidence: 0.7
 
       - object_type: circle
         path: /home/robotx/robotx_ws/perception/delivery_circle_v2_best.pt
-        confidence: 0.25
+        confidence: 0.7
 
 
   # Replace with the calibrated intrinsics of the downward RGB camera.

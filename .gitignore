@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+
+# Local runtime and debug logs
+11.txt
+*log*.txt
