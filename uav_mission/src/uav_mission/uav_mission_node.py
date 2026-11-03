@@ -836,6 +836,9 @@ class UavMissionNode(Node):
         )
     
     def _on_task_command(self, msg: String) -> None:
+        self.get_logger().info(
+            f"Task command received: {msg.data}"
+        )
         try:
             payload = json.loads(msg.data)
         except json.JSONDecodeError as exc:
@@ -984,6 +987,9 @@ class UavMissionNode(Node):
             )
 
     def _on_course_config(self, msg: String) -> None:
+        self.get_logger().info(
+            f"Course config received: {msg.data}"
+        )
         try:
             payload = json.loads(msg.data)
             corners = payload["corners"]
@@ -1174,9 +1180,21 @@ class UavMissionNode(Node):
 
     def _map_wait_begin(self) -> None:
         self._hold_if_control_started()
-        if self.begin_requests["MAP"]:
-            self.control_started = True
-            self._change_state("RECORD_HOME_COORDINATE")
+
+        # 条件1：必须收到MAP begin
+        if not self.begin_requests["MAP"]:
+            return
+
+        # 条件2：必须收到有效赛场配置并成功生成航点
+        if self.map_corners is None or not self.map_waypoints:
+            return
+
+        # 两个条件都满足后才真正开始
+        self.get_logger().info(
+            "MAP begin and course configuration received; starting MAP"
+        )
+        self.control_started = True
+        self._change_state("RECORD_HOME_COORDINATE")
 
     def _map_record_home_coordinate(self) -> None:
         # 等待有效的本地NED位置
@@ -3224,7 +3242,6 @@ class UavMissionNode(Node):
     ) -> None:
     # --------------
         self.get_logger().error(
-            f"Offboard exit detected: "
             f"nav_state={self.vehicle_nav_state}, "
             f"current_ned={self.local_position}, "
             f"last_published_sp={self.last_published_position_sp}, "
