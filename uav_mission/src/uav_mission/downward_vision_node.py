@@ -165,8 +165,8 @@ class DownwardVisionNode(Node):
             String,
             str(
                 topics.get(
-                    "map_result",
-                    "/tongji_mrl/tsky/map_targets_ned",
+                    "map_platforms",
+                    "/tongji_mrl/tsky/perception/platforms_ned",
                 )
             ),
             10,
@@ -352,7 +352,7 @@ class DownwardVisionNode(Node):
             self.attitude_q,
         )
 
-        # 保持原来的MAP输出格式，避免影响主节点
+        # Internal platform observations; mission_perception owns the USV MAP output.
         map_result = {
             "task": "MAP",
             "frame": "local_ned",
@@ -424,6 +424,9 @@ class DownwardVisionNode(Node):
         task3_result = {
             "task": "TASK3",
             "frame": "gripper",
+            "stamp": detections.get("rgb_stamp"),
+            "rgb_stamp": detections.get("rgb_stamp"),
+            "sequence": detections.get("sequence"),
             "objects": [
                 {
                     "type": item["type"],

@@ -23,7 +23,14 @@ MAP_TYPES = {"dock", "buoy", "platform"}
 
 
 def _point(value):
-    return [float(axis) for axis in value]
+    """Only admit finite 3-D positions to JSON and distance matching."""
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        return None
+    try:
+        point = [float(axis) for axis in value]
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return point if all(math.isfinite(axis) for axis in point) else None
 
 
 def observation_stamp(payload):
@@ -37,8 +44,13 @@ def observation_stamp(payload):
 
 
 def _envelope(payload):
+    # Preserve the original integer nanoseconds for the public protocol. Float
+    # seconds are sufficient for history, but lose precision at epoch times.
+    stamp = None if "observed_at_s" in payload else payload.get(
+        "stamp", payload.get("rgb_stamp", payload.get("header", {}).get("stamp")))
     return {"objects": [], "observed_at_s": observation_stamp(payload),
-            "accepted": True, "reason": ""}
+            "stamp": deepcopy(stamp),
+            "sequence": payload.get("sequence"), "accepted": True, "reason": ""}
 
 
 def _reject(result, reason):
@@ -56,11 +68,13 @@ def adapt_beacons(payload, source_frame="map"):
                 or position.get("frame_id") != source_frame):
             continue
         point = _point(position.get("world_xyz_m"))
+        if point is None:
+            continue
         raw_state = track.get("committed_state", track.get("state", "UNKNOWN"))
         state_valid = track.get("state_valid") is True
         color, state = BEACON_STATES.get(raw_state, ("unknown", "unknown"))
         if not state_valid:
-            state = "unknown"
+            color, state = "unknown", "unknown"
         result["objects"].append({
             "type": "buoy", "id": track["track_id"], "color": color, "state": state,
             "beacon_state": raw_state, "state_valid": state_valid, "position_valid": True,
@@ -77,14 +91,16 @@ def task1_blue_objects(payload):
 
 
 def adapt_platform(payload):
-    """Select platform positions from the existing downward MAP output."""
+    """Select platform positions from the internal downward MAP output."""
     result = _envelope(payload)
     if payload.get("frame", payload.get("frame_id")) != "local_ned":
         return _reject(result, "SOURCE_FRAME_MISMATCH")
     for item in payload.get("objects", []):
         if item.get("type") != "platform" or item.get("position_valid") is False:
             continue
-        point = _point(item["NED_position"])
+        point = _point(item.get("NED_position"))
+        if point is None:
+            continue
         observation = deepcopy(item)
         observation.update(NED_position=point, state="static", state_valid=True,
                            position_valid=True, frame_id="local_ned",
@@ -100,8 +116,12 @@ def adapt_dock(payload, source_frame="map_ned"):
         return _reject(result, "SOURCE_FRAME_MISMATCH")
     if not all(payload.get(key) is True for key in
                ("geometry_ready", "xyz_valid", "trunk_center_world_valid")):
-        return _reject(result, "DOCK_GEOMETRY_OR_POSITION_INVALID")
+        result["reason"] = "DOCK_GEOMETRY_OR_POSITION_INVALID"
+        return result
     center = _point(payload.get("trunk_center_world_m"))
+    if center is None:
+        result["reason"] = "DOCK_GEOMETRY_OR_POSITION_INVALID"
+        return result
     geometry = {"source_frame_id": source_frame,
                 "branch_identity_scope": "IMAGE_ORDER_NOT_PHYSICAL_BAY_ID", "branches": []}
     for key in ("trunk_start", "trunk_end", "trunk_center"):
@@ -113,17 +133,40 @@ def adapt_dock(payload, source_frame="map_ned"):
             item[key + "_NED_position"] = (
                 _point(branch.get(key + "_world_m")) if branch.get(key + "_world_valid") else None)
         geometry["branches"].append(item)
+    complete_geometry = (
+        all(geometry[key + "_NED_position"] is not None
+            for key in ("trunk_start", "trunk_end", "trunk_center"))
+        and bool(geometry["branches"])
+        and all(branch[key + "_NED_position"] is not None
+                for branch in geometry["branches"] for key in ("tip", "root", "center"))
+    )
     metadata = {key: payload[key] for key in (
         "detector_version", "status", "invalid_reason", "geometry_score", "branch_count",
         "xyz_method", "geometry_ready", "xyz_valid", "planning_ready") if key in payload}
     result["objects"] = [{
         "type": "dock", "id": payload.get("id", 0), "color": "unknown", "state": "static",
         "position_valid": True, "state_valid": True,
-        "planning_ready": payload.get("planning_ready", False),
+        "planning_ready": bool(payload.get("planning_ready", False) and complete_geometry),
         "NED_position": center, "frame_id": "local_ned", "observed_at_s": result["observed_at_s"],
         "geometry": geometry, "metadata": metadata,
     }]
     return result
+
+
+def map_objects(payload):
+    """Project one source batch to the USV object contract, without history."""
+    objects = []
+    for item in payload["objects"]:
+        obj = {"type": item["type"], "color": item.get("color", "unknown"),
+               "state": item.get("state", "unknown"), "id": item["id"],
+               "NED_position": list(item["NED_position"]),
+               "position_valid": item["position_valid"], "state_valid": item["state_valid"]}
+        # Dock center is a detected structure, not a verified physical berth.
+        if item["type"] == "dock":
+            obj["planning_ready"] = item["planning_ready"]
+            obj["geometry"] = deepcopy(item["geometry"])
+        objects.append(obj)
+    return objects
 
 
 class MissionMapRecorder:

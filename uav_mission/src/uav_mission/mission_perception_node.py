@@ -1,4 +1,4 @@
-"""Route mission perception to MAP records and the TASK1 buoy input."""
+"""Publish unified MAP observations; keep survey history on disk."""
 
 from __future__ import annotations
 
@@ -13,13 +13,20 @@ from std_msgs.msg import String
 import yaml
 
 from uav_common.mission_perception import (
-    MissionMapRecorder, adapt_beacons, adapt_dock, adapt_platform, task1_blue_objects,
+    MissionMapRecorder, adapt_beacons, adapt_dock, adapt_platform, map_objects, task1_blue_objects,
 )
 
 
 def stamp_dict(seconds):
     total = round(seconds * 1_000_000_000)
     return {"sec": total // 1_000_000_000, "nanosec": total % 1_000_000_000}
+
+
+def result_stamp(result):
+    if result["stamp"] is not None:
+        return result["stamp"]
+    seconds = result["observed_at_s"]
+    return stamp_dict(seconds) if seconds is not None else None
 
 
 def point_list(point):
@@ -33,6 +40,10 @@ class MissionPerceptionNode(Node):
         path = Path(self.get_parameter("config_file").value).expanduser()
         config = yaml.safe_load(path.read_text(encoding="utf-8"))["mission_perception"]
         topics = config["topics"]
+        # Compare resolved names too: a launch remap must not create feedback.
+        output = self.resolve_topic_name(topics["map_result"])
+        if output in {self.resolve_topic_name(topics[key]) for key in ("beacons", "platforms", "dock")}:
+            raise ValueError("MAP output must differ from all perception input topics")
         self.session_id = uuid4().hex
         self.mode, self.object_types = "OFF", set()
         self.recorder = MissionMapRecorder(
@@ -42,10 +53,9 @@ class MissionPerceptionNode(Node):
         directory = Path(config["snapshot_directory"]).expanduser()
         self.snapshot_file = directory / ("map_" + self.session_id + ".json")
         self.dirty = self.have_map_session = False
-        self.source_status = {}
         control_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                  durability=DurabilityPolicy.TRANSIENT_LOCAL)
-        self.map_pub = self.create_publisher(String, topics["map_records"], control_qos)
+        self.map_pub = self.create_publisher(String, topics["map_result"], 10)
         self.buoy_pub = self.create_publisher(String, topics["task1_buoy"], 10)
         self.control_sub = self.create_subscription(
             String, topics["vision_control"], self._control, control_qos)
@@ -75,14 +85,15 @@ class MissionPerceptionNode(Node):
         self.recorder.set_mode(mode, now, session_id=self.session_id)
         self.have_map_session |= mode == "MAP"
         self.dirty = self.have_map_session
-        self._publish_map(now)
+        self._save_map(now)
 
     def _enabled(self, object_type, modes):
         return self.mode in modes and object_type in self.object_types
 
     def _record(self, source, result, now):
-        self.source_status[source] = {"accepted": result["accepted"], "reason": result["reason"]}
         self.dirty |= self.recorder.ingest(source, result, now) > 0
+        if result["accepted"]:
+            self._publish_map(source, result)
 
     def _beacons(self, message):
         if not self._enabled("buoy", ("MAP", "TASK1")):
@@ -95,7 +106,7 @@ class MissionPerceptionNode(Node):
         else:
             objects = task1_blue_objects(result)
             if objects:
-                self._publish_task1(objects, result["observed_at_s"])
+                self._publish_task1(objects, result_stamp(result))
 
     def _platforms(self, message):
         if self._enabled("platform", ("MAP",)):
@@ -130,22 +141,23 @@ class MissionPerceptionNode(Node):
 
     def _publish_task1(self, objects, stamp):
         self._publish(self.buoy_pub, {"task": "TASK1", "frame": "local_ned",
-                                    "stamp": stamp_dict(stamp) if stamp is not None else None,
-                                    "objects": objects})
+                                    "stamp": stamp, "objects": objects})
 
-    def _publish_map(self, now):
-        if not self.have_map_session:
-            return
-        payload = self.recorder.snapshot(now)
-        payload["sources"] = dict(self.source_status)
-        payload["snapshot_file"] = str(self.snapshot_file)
-        if self.dirty:
+    def _publish_map(self, source, result):
+        stamp = result_stamp(result)
+        self._publish(self.map_pub, {
+            "task": "MAP", "frame": "local_ned", "source": source,
+            "stamp": stamp, "rgb_stamp": stamp, "sequence": result["sequence"],
+            "objects": map_objects(result),
+        })
+
+    def _save_map(self, now):
+        if self.have_map_session and self.dirty:
             self.recorder.write_snapshot(self.snapshot_file, now)
             self.dirty = False
-        self._publish(self.map_pub, payload)
 
     def _tick(self):
-        self._publish_map(self._now())
+        self._save_map(self._now())
 
     def destroy_node(self):
         if self.have_map_session:

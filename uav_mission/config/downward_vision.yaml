@@ -9,7 +9,8 @@ downward_vision:
     depth_image: /oak/stereo/image_raw
     vehicle_local_position: /fmu/out/vehicle_local_position_v1
     vehicle_attitude: /fmu/out/vehicle_attitude
-    map_result: /tongji_mrl/tsky/map_targets_ned
+    # Internal platform input to mission_perception; it publishes the public MAP topic.
+    map_platforms: /tongji_mrl/tsky/perception/platforms_ned
     task3_result: /tongji_mrl/tsky/task3_target_gripper
 
     map_debug_result: /tongji_mrl/tsky/map_detection_debug

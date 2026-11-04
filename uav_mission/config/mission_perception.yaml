@@ -3,8 +3,8 @@ mission_perception:
     vision_control: /tongji_mrl/tsky/downward_vision_control
     beacons: /task1/beacons/results_json
     dock: /robotx/perception/uav/pontoon/observation
-    platforms: /tongji_mrl/tsky/map_targets_ned
-    map_records: /tongji_mrl/tsky/map_records
+    platforms: /tongji_mrl/tsky/perception/platforms_ned
+    map_result: /tongji_mrl/tsky/map_targets_ned
     task1_buoy: /tongji_mrl/tsky/task1_buoy
   map_match_radius_m: 1.0
   map_history_limit: 64
