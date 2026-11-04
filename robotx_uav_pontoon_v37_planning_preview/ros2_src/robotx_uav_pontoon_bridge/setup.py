@@ -9,6 +9,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
+        (os.path.join('share', package_name, 'detector'), sorted(glob('../../detector/*.py'))),
     ],
     install_requires=['setuptools'], zip_safe=True,
     maintainer='RobotX UAV Team', maintainer_email='robotx@example.invalid',

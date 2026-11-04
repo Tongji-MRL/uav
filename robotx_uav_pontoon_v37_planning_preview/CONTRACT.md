@@ -30,7 +30,7 @@
 
 ## Metric projection methods
 
-1. `aligned_depth`: rectified RGB CameraInfo.P + pixel-aligned 16UC1 (millimeters) or 32FC1 (meters) depth; depth must match RGB image size, optical frame, and timestamp within 80 ms. A 5x5 median patch is used; depth edges with >0.30 m 10th-to-90th percentile spread are rejected.
+1. `aligned_depth`: pixel-aligned 16UC1 (millimeters) or 32FC1 (meters) depth. With `input_rectified=true` (default), rays use CameraInfo.P. With `input_rectified=false`, raw RGB rays use CameraInfo.K/D with OpenCV's pinhole `undistortPoints` model. Depth must match the actual input RGB pixels, image size, optical frame, and timestamp within 80 ms. A 5x5 median patch is used; depth edges with >0.30 m 10th-to-90th percentile spread are rejected.
 2. `known_plane`: optional explicit measured top-plane height `plane_z_ned_m`, verified and enabled. Pixel rays intersect that plane using timestamped TF. This is **not** generic monocular depth and is invalid when pontoon top is not horizontal/at the configured height.
 3. `mixed`: different points obtained by different methods; requires all points valid to set `xyz_valid=true`.
 4. `none`: no valid metric projection.
@@ -40,7 +40,7 @@ Do not enable known-plane projection using a guessed height. Never publish a fab
 ## Dependencies to verify before real planning
 
 - Detector's exact V3.7 result schema (run `scripts/probe_v37.py`); the adapter fails closed if not mapped.
-- Input is rectified RGB with correct CameraInfo.P, and detector UV points correspond to source image pixel coordinates.
+- Input uses the configured raw/rectified camera model, and detector UV points correspond to source image pixel coordinates. Raw depth must be registered to raw RGB pixels; matching topic names alone do not establish alignment.
 - Real TF chain at image timestamp: `map_ned -> uav_base_link -> uav_camera_mount -> uav_camera_optical_frame`.
 - Actual UAV source topics and depth alignment (if any).
 - Measured plane height or calibrated depth, plus ground truth comparison with tape measure / surveyed targets.
@@ -49,3 +49,9 @@ Do not enable known-plane projection using a guessed height. Never publish a fab
 ## Relationship to existing RobotX resources contract
 
 This package publishes its own typed `pontoon/observation` topic and does not modify `/robotx/perception/uav/resources` or `/robotx/perception/uav/resources_world`. The planning team can build a bridge to those existing contracts after agreeing on what a pontoon branch represents. Do not silently repurpose the existing `TargetObservation` fields.
+
+## Mission control and installed detector
+
+`source_dir=''` loads the V3.7 detector and its dependencies installed under this package's `share/robotx_uav_pontoon_bridge/detector`; an explicit directory remains supported. No developer-specific path is required.
+
+Standalone behavior remains enabled by default. With `mission_control.enabled=true`, the node starts OFF and subscribes to `mission_control.topic` (default `/tongji_mrl/tsky/downward_vision_control`) using reliable, transient-local QoS, depth 1. JSON commands have `mode` and an `object_types` list. Detection runs only for `{"mode":"MAP","object_types":["dock"]}` (other selected object types may coexist). Mode/selection changes preserve buffered depth and keep the frame-local detector loaded. Depth reuse follows the existing image-size, optical-frame and timestamp checks. This control does not change any metric or planning validity checks.

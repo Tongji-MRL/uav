@@ -1,0 +1,28 @@
+mission_perception:
+  topics:
+    vision_control: /tongji_mrl/tsky/downward_vision_control
+    beacons: /task1/beacons/results_json
+    dock: /robotx/perception/uav/pontoon/observation
+    platforms: /tongji_mrl/tsky/map_targets_ned
+    map_records: /tongji_mrl/tsky/map_records
+    task1_buoy: /tongji_mrl/tsky/task1_buoy
+  map_match_radius_m: 1.0
+  map_history_limit: 64
+  snapshot_directory: ~/.ros/uav_mission/maps
+
+px4_pose:
+  topics:
+    vehicle_local_position: /fmu/out/vehicle_local_position_v1
+    vehicle_attitude: /fmu/out/vehicle_attitude
+    odometry: /tongji_mrl/tsky/perception/odometry
+    camera_info: /oak/rgb/camera_info
+  # PX4 and image timestamps must use the same clock. A measured fixed offset
+  # can be configured here; arrival time never substitutes for capture time.
+  timestamp_offset_seconds: 0.0
+  pose_sync_tolerance_seconds: 0.05
+  max_clock_skew_seconds: 0.5
+  buffer_seconds: 2.0
+  max_buffer_samples: 512
+  # Empty uses CameraInfo.header.frame_id. Extrinsics use the same
+  # T_body_camera as the existing downward vision pipeline.
+  downward_camera_frame_id: ''

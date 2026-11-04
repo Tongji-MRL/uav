@@ -38,6 +38,7 @@ from .lamp_photometry import LampPhotometer, DEFAULTS as LAMP_PHOTOMETRY_DEFAULT
 from .plane_localization_ros import PlaneLocalizationROS
 from .engine_geometry import engine_contract
 from .model_output import load_model, detections_from_prediction
+from .mission_control import MissionControl
 from .native_stream_status import NativeStreamStatus, status_text
 from .local_zoom import (InferenceRegionPlanner, DEFAULTS as LOCAL_ZOOM_DEFAULTS,
                          validate as validate_zoom, fit_canvas, add_roi_panel)
@@ -62,6 +63,8 @@ class Task1BeaconNode(Node):
         self.last_payload = None
         self.detector_worker = None
         self._declare_parameters()
+        self.mission_control = MissionControl(
+            self._value("mission_control.enabled"), "buoy", ("MAP", "TASK1"))
 
         model_name = str(self._value("model_path"))
         if not model_name:
@@ -377,10 +380,27 @@ class Task1BeaconNode(Node):
                 min_idle_seconds=float(self._value("scheduling.min_idle_seconds")),
                 budget_enabled=bool(self._value("scheduling.budget_enabled")),
                 motion_fps=float(self._value("scheduling.motion_fps")),
+                enabled=self.mission_control.active,
             )
             self.get_logger().info("Async photometry active; YOLO budget=" +
                                    ("enabled" if self._value("scheduling.budget_enabled") else "OFF"))
         self.add_on_set_parameters_callback(self._live_parameters)
+        self.control_subscription = None
+        if self.mission_control.enabled:
+            self.control_subscription = self.create_subscription(
+                String, str(self._value("mission_control.topic")), self._mission_command,
+                QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
+                           reliability=ReliabilityPolicy.RELIABLE,
+                           durability=DurabilityPolicy.TRANSIENT_LOCAL))
+
+    def _mission_command(self, message):
+        if not self.mission_control.update(message.data):
+            return
+        if self.detector_worker is not None:
+            self.detector_worker.set_enabled(self.mission_control.active)
+        self.get_logger().info(
+            f"Mission perception: mode={self.mission_control.mode}, "
+            f"buoy={'ON' if self.mission_control.active else 'OFF'}")
 
     def _live_parameters(self, changes):
         values = {parameter.name: parameter.value for parameter in changes}
@@ -434,6 +454,8 @@ class Task1BeaconNode(Node):
 
     def _declare_parameters(self) -> None:
         defaults = {
+            "mission_control.enabled": False,
+            "mission_control.topic": "/tongji_mrl/tsky/downward_vision_control",
             "model_path": "",
             "image_topic": "/arducam/image_raw",
             "model_task": "segment",
@@ -658,6 +680,8 @@ class Task1BeaconNode(Node):
     def _image_callback(self, message: Image) -> None:
         # Count native arrivals before conversion or the CPU processing cap.
         self.input_stream.received(message.width, message.height, message.encoding, message.header)
+        if not self.mission_control.active:
+            return
         if self.max_fps > 0 and time.monotonic() - self.last_processed_time < 1.0 / self.max_fps:
             return  # Avoid converting a ROS image that the CPU rate cap will discard.
         try:
@@ -669,6 +693,8 @@ class Task1BeaconNode(Node):
 
     def process_frame(self, frame, header) -> None:
         """Process a BGR frame received from the ROS image subscription."""
+        if not self.mission_control.active:
+            return False
         wall_now = time.monotonic()
         if self.max_fps > 0.0:
             interval = 1.0 / self.max_fps

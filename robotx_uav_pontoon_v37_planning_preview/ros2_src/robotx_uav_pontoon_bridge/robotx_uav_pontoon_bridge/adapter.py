@@ -113,6 +113,9 @@ def normalize(raw, width, height, expected_branches=4):
 
 class V37Adapter:
     def __init__(self, source_dir, max_side=480, expected_branches=4):
+        if not source_dir:
+            from ament_index_python.packages import get_package_share_directory
+            source_dir = os.path.join(get_package_share_directory('robotx_uav_pontoon_bridge'), 'detector')
         source_dir = os.path.abspath(os.path.expanduser(source_dir))
         if not os.path.isfile(os.path.join(source_dir, 'uav_pontoon_v37.py')):
             raise FileNotFoundError(f'uav_pontoon_v37.py missing in {source_dir}')

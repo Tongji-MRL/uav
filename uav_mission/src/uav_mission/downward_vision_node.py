@@ -34,7 +34,13 @@ from uav_common.multi_rgbd_target_detector import (
 class DownwardVisionNode(Node):
     """Select a MAP or TASK3 RGB-D pipeline without controlling the UAV."""
 
-    VALID_MODES = {"OFF", "MAP", "TASK3"}
+    VALID_MODES = {"OFF", "MAP", "TASK1", "TASK3"}
+    MODE_OBJECT_TYPES = {
+        "OFF": frozenset(),
+        "MAP": frozenset({"platform"}),
+        "TASK1": frozenset(),
+        "TASK3": frozenset({"platform", "tin", "circle"}),
+    }
 
     def __init__(self) -> None:
         super().__init__("downward_vision")
@@ -67,11 +73,19 @@ class DownwardVisionNode(Node):
         # Both models are loaded once. Mode selection decides which one runs.
         self.map_detector = MultiRgbdTargetDetector(
             perception,
-            models.get("map", []),
+            [
+                item for item in models.get("map", [])
+                if str(item.get("object_type", "")).strip().lower()
+                in self.MODE_OBJECT_TYPES["MAP"]
+            ],
         )
         self.task3_detector = MultiRgbdTargetDetector(
             perception,
-            models.get("task3", []),
+            [
+                item for item in models.get("task3", [])
+                if str(item.get("object_type", "")).strip().lower()
+                in self.MODE_OBJECT_TYPES["TASK3"]
+            ],
         )
 
         self.map_to_ned = MapDetectionToNed(camera, transforms)
@@ -90,6 +104,12 @@ class DownwardVisionNode(Node):
             depth=1,
         )
 
+        control_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
         self.control_sub = self.create_subscription(
             String,
             str(
@@ -99,7 +119,7 @@ class DownwardVisionNode(Node):
                 )
             ),
             self._on_control,
-            10,
+            control_qos,
         )
         self.rgb_sub = self.create_subscription(
             Image,
@@ -216,37 +236,17 @@ class DownwardVisionNode(Node):
 
     def _on_control(self, msg: String) -> None:
         command = json.loads(msg.data)
+        mode = command["mode"]
+        requested_types = set(command["object_types"])
 
-        mode = str(command["mode"]).strip().upper()
-        if mode not in self.VALID_MODES:
-            self.get_logger().warning(
-                f"Ignored unknown vision mode: {mode}"
-            )
-            return
-
-        requested_types = {
-            str(item).strip().lower()
-            for item in command.get("object_types", [])
-        }
-
-        if mode == "OFF":
-            active_types = set()
-        elif "all" in requested_types:
-            active_types = None
-        else:
-            active_types = requested_types
-
-        if (
-            mode != self.mode
-            or active_types != self.active_object_types
-        ):
+        allowed = self.MODE_OBJECT_TYPES[mode]
+        active_types = set(allowed) if "all" in requested_types else allowed & requested_types
+        if mode != self.mode or active_types != self.active_object_types:
             self.mode = mode
-            self.active_object_types = active_types
+            self.active_object_types = set(active_types)
             self.last_processed_stamp = None
-
             self.get_logger().info(
-                f"Vision mode={mode}, "
-                f"objects={active_types or 'ALL/NONE'}"
+                f"Vision mode={mode}, objects={sorted(active_types)}"
             )
 
     def _on_rgb_image(self, msg: Image) -> None:
@@ -269,8 +269,8 @@ class DownwardVisionNode(Node):
         self.attitude_q = [float(value) for value in msg.q]
 
     def _process_latest_frame(self) -> None:
-        # OFF模式不推理；没有RGB图像也无法推理
-        if self.mode == "OFF" or self.latest_rgb is None:
+        # TASK1 uses the separate beacon detector, so down-looking inference stops.
+        if self.mode not in {"MAP", "TASK3"} or self.latest_rgb is None:
             return
 
         # 空集合表示当前不运行任何模型
@@ -356,6 +356,9 @@ class DownwardVisionNode(Node):
         map_result = {
             "task": "MAP",
             "frame": "local_ned",
+            "stamp": detections.get("rgb_stamp"),
+            "rgb_stamp": detections.get("rgb_stamp"),
+            "sequence": detections.get("sequence"),
             "objects": [
                 {
                     "type": item["type"],

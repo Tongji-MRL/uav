@@ -4,7 +4,6 @@ Safety: all coordinate outputs are invalid unless camera model, timestamped TF
 and a metric source are valid. This node publishes OBSERVATIONS ONLY.
 """
 import json
-import math
 import traceback
 import numpy as np
 
@@ -12,7 +11,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.duration import Duration
 from rclpy.time import Time
-from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy
+from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image, CameraInfo
 from std_msgs.msg import String
 from geometry_msgs.msg import Point, Point32
@@ -21,8 +20,9 @@ from tf2_ros import Buffer, TransformListener
 from robotx_uav_pontoon_interfaces.msg import PontoonObservation, PontoonBranch
 
 from .adapter import V37Adapter
+from .mission_control import MissionControl
 from .geometry import (quat_to_rotation, optical_point_from_depth, transform_point,
-                       intersect_plane_z, median_depth_patch)
+                       intersect_plane_z, median_depth_patch, camera_parameters)
 
 
 def p32(uv):
@@ -47,9 +47,12 @@ class PontoonNode(Node):
     def __init__(self):
         super().__init__('uav_pontoon_v37_bridge')
         defaults = {
-            'source_dir': '/home/yangxy/robotx_ws/src/robotx_perception/robotx_uav_perception/robotx_uav_perception/task3_pontoon',
+            'source_dir': '',
+            'mission_control.enabled': False,
+            'mission_control.topic': '/tongji_mrl/tsky/downward_vision_control',
             'image_topic': '/uav/camera/image_rect_color',
             'camera_info_topic': '/uav/camera/camera_info',
+            'input_rectified': True,
             'aligned_depth_topic': '/uav/camera/aligned_depth_to_color/image_raw',
             'observation_topic': '/robotx/perception/uav/pontoon/observation',
             'status_topic': '/robotx/perception/uav/pontoon/status',
@@ -70,6 +73,7 @@ class PontoonNode(Node):
         for key, value in defaults.items():
             self.declare_parameter(key, value)
         self.cfg = {key: self.get_parameter(key).value for key in defaults}
+        self.mission_control = MissionControl(self.cfg['mission_control.enabled'], 'dock', ('MAP',))
         self.bridge = CvBridge()
         self.camera_info = None
         self.depth = None
@@ -87,16 +91,32 @@ class PontoonNode(Node):
         self.info_sub = self.create_subscription(CameraInfo, self.cfg['camera_info_topic'], self.on_info, image_qos)
         if self.cfg['use_aligned_depth']:
             self.depth_sub = self.create_subscription(Image, self.cfg['aligned_depth_topic'], self.on_depth, image_qos)
+        self.control_subscription = None
+        if self.mission_control.enabled:
+            self.control_subscription = self.create_subscription(
+                String, self.cfg['mission_control.topic'], self.on_control,
+                QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
+                           reliability=ReliabilityPolicy.RELIABLE,
+                           durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.get_logger().info('V3.7 bridge started; all world points invalid until calibrated TF + metric source exist')
         if self.cfg['enable_plane_projection'] and not self.cfg['plane_height_verified']:
             self.get_logger().warn('Plane projection requested but plane_height_verified=false; projection DISABLED')
         if self.cfg['branch_ids_verified']:
             self.get_logger().warn('branch_ids_verified=true: operator is responsible for checking physical B1..B4 mapping')
 
+    def on_control(self, msg):
+        if not self.mission_control.update(msg.data):
+            return
+        self.get_logger().info(
+            f'Mission perception: mode={self.mission_control.mode}, '
+            f'dock={"ON" if self.mission_control.active else "OFF"}')
+
     def on_info(self, msg):
         self.camera_info = msg
 
     def on_depth(self, msg):
+        if not self.mission_control.active:
+            return
         try:
             if msg.encoding == '16UC1':
                 depth_m = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough').astype(np.float32) * 0.001
@@ -121,15 +141,11 @@ class PontoonNode(Node):
             raise ValueError('camera_info_image_size_mismatch')
         if not image_msg.header.frame_id or info.header.frame_id != image_msg.header.frame_id:
             raise ValueError('camera_info_optical_frame_mismatch')
-        # Input must be rectified. CameraInfo.P models the rectified image.
-        fx, fy, cx, cy = float(info.p[0]), float(info.p[5]), float(info.p[2]), float(info.p[6])
-        if not all(math.isfinite(x) for x in (fx, fy, cx, cy)) or fx <= 0 or fy <= 0:
-            raise ValueError('rectified_camera_info_P_invalid')
-        return fx, fy, cx, cy
+        return camera_parameters(info, self.cfg['input_rectified'])
 
     def metric_context(self, image_msg):
         """Build metric context at image timestamp. Never use latest TF fallback."""
-        fx, fy, cx, cy = self.camera_model(image_msg)
+        fx, fy, cx, cy, distortion = self.camera_model(image_msg)
         if time_seconds(image_msg.header.stamp) <= 0:
             raise ValueError('image_timestamp_invalid')
         tf = self.tf_buffer.lookup_transform(
@@ -148,28 +164,31 @@ class PontoonNode(Node):
                        abs(time_seconds(self.depth_stamp) - time_seconds(image_msg.header.stamp))
                        <= float(self.cfg['max_depth_age_sec']))
         plane_ok = self.cfg['enable_plane_projection'] and self.cfg['plane_height_verified']
-        return (fx, fy, cx, cy, R, T, valid_depth, plane_ok)
+        return (fx, fy, cx, cy, R, T, valid_depth, plane_ok, distortion)
 
     def uv_to_world(self, uv, ctx):
         if uv is None:
             return None, 'none'
-        fx, fy, cx, cy, R, T, depth_ok, plane_ok = ctx
+        fx, fy, cx, cy, R, T, depth_ok, plane_ok, distortion = ctx
         if depth_ok:
             d = median_depth_patch(self.depth, uv[0], uv[1])
             if d is not None:
                 xyz = transform_point(optical_point_from_depth(
-                    uv[0], uv[1], d, fx, fy, cx, cy), R, T)
+                    uv[0], uv[1], d, fx, fy, cx, cy, distortion), R, T)
                 return xyz, 'aligned_depth'
         if plane_ok:
             try:
                 xyz = intersect_plane_z(uv[0], uv[1], fx, fy, cx, cy, R, T,
-                    float(self.cfg['plane_z_ned_m']), max_range_m=float(self.cfg['max_plane_range_m']))
+                    float(self.cfg['plane_z_ned_m']), max_range_m=float(self.cfg['max_plane_range_m']),
+                    distortion=distortion)
                 return xyz, 'known_plane'
             except ValueError:
                 pass
         return None, 'none'
 
     def on_image(self, image_msg):
+        if not self.mission_control.active:
+            return
         self.count += 1
         obs = PontoonObservation()
         obs.header = image_msg.header

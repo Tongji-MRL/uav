@@ -36,6 +36,8 @@ setup(
             "uav_mission.downward_vision_node:main",
             "downward_vision2 = "
             "uav_mission.downward_vision_node2:main",
+            "mission_perception = uav_mission.mission_perception_node:main",
+            "px4_perception_pose = uav_mission.px4_perception_pose_node:main",
             "px4_gripper_control = "
             "uav_mission.px4_gripper_control_node:main",
             "landing_gear_control = "

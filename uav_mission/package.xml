@@ -24,6 +24,12 @@
   <exec_depend>uav_task1</exec_depend>
   <exec_depend>uav_task3</exec_depend>
   <exec_depend>uav_task4</exec_depend>
+  <exec_depend>color_light_detector</exec_depend>
+  <exec_depend>robotx_uav_pontoon_bridge</exec_depend>
+  <exec_depend>robotx_uav_pontoon_interfaces</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

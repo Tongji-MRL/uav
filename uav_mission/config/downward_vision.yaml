@@ -35,13 +35,8 @@ downward_vision:
       - object_type: platform
         path: /home/robotx/robotx_ws/perception/delivery_platform_v2_best.pt
         confidence: 0.7
-      - object_type: tin
-        path: /home/robotx/robotx_ws/perception/supply_can_v2_best.pt
-        confidence: 0.7
-      - object_type: circle
-        path: /home/robotx/robotx_ws/perception/delivery_circle_v2_best.pt
-        confidence: 0.7
-        
+    # TASK3 normally runs platform + tin; circle is additionally requested
+    # during the existing destination-circle placement step.
     task3:
       - object_type: tin
         path: /home/robotx/robotx_ws/perception/supply_can_v2_best.pt

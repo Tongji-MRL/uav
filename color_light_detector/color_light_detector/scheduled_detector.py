@@ -33,7 +33,7 @@ def validate_control(values):
 
 class ScheduledDetector:
     def __init__(self, predict, search_fps=4.0, track_fps=3.0, duty_cycle=0.55,
-                 min_idle_seconds=0.04, budget_enabled=True, motion_fps=6.0):
+                 min_idle_seconds=0.04, budget_enabled=True, motion_fps=6.0, enabled=True):
         self.predict = predict
         self.control = validate_control(dict(search_fps=search_fps, track_fps=track_fps,
             duty_cycle=duty_cycle, min_idle_seconds=min_idle_seconds,
@@ -42,6 +42,7 @@ class ScheduledDetector:
         self.latest = None
         self.result = None
         self.closed = False
+        self.enabled = bool(enabled)
         self.last_finished = 0.0
         self.last_elapsed = 0.0
         self.retry_at = 0.0
@@ -51,6 +52,12 @@ class ScheduledDetector:
                           duty_budget=duty_cycle if budget_enabled else None)
         self.thread = threading.Thread(target=self._run, name="task1-yolo-worker", daemon=True)
         self.thread.start()
+
+    def set_enabled(self, enabled):
+        """Pause or resume inference while retaining queued work and results."""
+        with self.condition:
+            self.enabled = bool(enabled)
+            self.condition.notify_all()
 
     def configure(self, values):
         with self.condition:
@@ -83,7 +90,7 @@ class ScheduledDetector:
         or a newer set of ROI coordinates while this worker is busy.
         """
         with self.condition:
-            if self.closed:
+            if self.closed or not self.enabled:
                 return
             if self.latest is not None:
                 self.stats["replaced_inputs"] += 1
@@ -110,7 +117,7 @@ class ScheduledDetector:
         while True:
             with self.condition:
                 while not self.closed:
-                    if self.latest is None:
+                    if not self.enabled or self.latest is None:
                         self.condition.wait()
                         continue
                     idle, fps = self._idle(self.latest[4])

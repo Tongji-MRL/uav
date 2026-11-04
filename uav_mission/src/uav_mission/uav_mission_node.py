@@ -69,6 +69,27 @@ def select_flashing_blue_buoy(payload: Any) -> dict[str, Any] | None:
     return None
 
 
+def mission_vision_command(
+    mission: str, state: str, begin: bool, finished: bool,
+) -> tuple[str, tuple[str, ...]]:
+    """Choose perception from task lifetime, independently of flight actions."""
+    if (not begin or finished or state in {
+        "MAP_FINISH", "TASK1_FINISH", "FINISHED", "ERROR",
+    }):
+        return "OFF", ()
+    if mission == "MAP":
+        return "MAP", ("dock", "buoy", "platform")
+    if mission == "TASK1":
+        return "TASK1", ("buoy",)
+    if mission == "TASK3":
+        objects = ("platform", "tin")
+        # Preserve the existing destination-circle alignment during placement.
+        if state == "PLACE_RESOURCE":
+            objects += ("circle",)
+        return "TASK3", objects
+    return "OFF", ()
+
+
 class UavMissionNode(Node):
     """Run MAP, TASK1, TASK3, and TASK4 through one ROS 2 node."""
 
@@ -222,6 +243,7 @@ class UavMissionNode(Node):
         self.state = "WAIT_BEGIN"
         self.error: str | None = None
         self.control_started = False
+        self._last_vision_command = None
 
         self.begin_requests = {
             "MAP": False,
@@ -279,6 +301,7 @@ class UavMissionNode(Node):
         # ==============================================================
         self.task1_begin_time: float | None = None
         self.task1_buoy: dict[str, Any] | None = None
+        self.task1_buoy_source = target_cfg.get("task1_buoy_source", "local")
         self.task1_target: list[float] | None = None
         self.task1_usv_at_start = False
         self.task1_usv_at_end = False
@@ -557,11 +580,13 @@ class UavMissionNode(Node):
             self._on_local_position,
             px4_qos,
         )
+        # Select one producer; local and external use the same objects protocol.
+        buoy_topic = {
+            "local": topics.get("task1_local_buoy", "/tongji_mrl/tsky/task1_buoy"),
+            "external": topics.get("task1_buoy", "/tongji_mrl/twave/task1_buoy"),
+        }[self.task1_buoy_source]
         self.task1_buoy_sub = self.create_subscription(
-            String,
-            str(topics.get("task1_buoy", "/tongji_mrl/twave/task1_buoy")),
-            self._on_task1_buoy,
-            10,
+            String, str(buoy_topic), self._on_task1_buoy, 10,
         )
         self.task1_reply_sub = self.create_subscription(
             String,
@@ -682,7 +707,13 @@ class UavMissionNode(Node):
             px4_qos,
         )
 
-        # 视觉控制发布器
+        # Keep the latest task mode available to detectors that start later.
+        vision_control_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
         self.vision_control_pub = self.create_publisher(
             String,
             str(
@@ -691,8 +722,9 @@ class UavMissionNode(Node):
                     "/tongji_mrl/tsky/downward_vision_control",
                 )
             ),
-            10,
+            vision_control_qos,
         )
+        self._sync_vision_control()
         
         # 控制夹爪的发布器
         self.gripper_command_pub = self.create_publisher(
@@ -942,9 +974,6 @@ class UavMissionNode(Node):
             # 发布切换前的任务进度
             self._publish_checkpoint()
 
-            # 暂停原任务使用的视觉检测
-            self._publish_vision_mode("OFF", [])
-
             # 切换总状态机到TASK4
             self._change_mission(
                 "TASK4",
@@ -985,6 +1014,7 @@ class UavMissionNode(Node):
             self.get_logger().info(
                 f"Received {task} finish command"
             )
+        self._sync_vision_control()
 
     def _on_course_config(self, msg: String) -> None:
         self.get_logger().info(
@@ -1137,10 +1167,10 @@ class UavMissionNode(Node):
             self.error = "Pilot left Offboard mode"
             self.error_handover_complete = True
 
-            self._publish_vision_mode("OFF", [])
             self._change_mission("ERROR", "ERROR")
             return
 
+        self._sync_vision_control()
         if self.mission == "MAP":
             self._run_map_state_machine()
         elif self.mission == "TASK1":
@@ -1303,7 +1333,6 @@ class UavMissionNode(Node):
         self._change_state("FOLLOW_ROUTE")
 
     def _map_follow_route(self) -> None:
-        self._publish_vision_mode("MAP", ["all"])
         if not self._local_position_is_fresh(time.monotonic()):
             self._publish_position_hold()
             self._set_error("PX4 local position is unavailable or stale")
@@ -1394,8 +1423,6 @@ class UavMissionNode(Node):
             )
         # ----------------
 
-        # MAP完成后发布视觉启动结束
-        self._publish_vision_mode("OFF", [])
         # MAP完成后持续保持静止
         self._publish_position_hold()
 
@@ -1713,11 +1740,6 @@ class UavMissionNode(Node):
         )
 
     def _task3_move_to_platform(self) -> None:
-        self._publish_vision_mode(
-            "TASK3",
-            ["platform"],
-        )
-
         now = time.monotonic()
 
         if not self._local_position_is_fresh(now):
@@ -1840,12 +1862,6 @@ class UavMissionNode(Node):
         # 保持无人机静止
         self._publish_position_hold()
 
-        # 开启TIN检测
-        self._publish_vision_mode(
-            "TASK3",
-            ["tin"],
-        )
-
         now = time.monotonic()
 
         # 持续保存最新一帧中的TIN信息
@@ -1887,9 +1903,6 @@ class UavMissionNode(Node):
             f"{self.task3_tin_count} tin(s), "
             f"{self.task3_tin_objects}"
         )
-
-        # 停止当前视觉检测
-        self._publish_vision_mode("OFF", [])
 
         # 换成你接下来实际需要的状态名称
         self._change_state("CHECK_PLATFORM")
@@ -1970,11 +1983,6 @@ class UavMissionNode(Node):
         )
     
     def _task3_align_tin_xy(self) -> None:
-        self._publish_vision_mode(
-            "TASK3",
-            ["tin"],
-        )
-
         now = time.monotonic()
         tin = self._get_nearest_resource_tin(now)
 
@@ -2059,8 +2067,6 @@ class UavMissionNode(Node):
         self.task3_align_stable_start_time = None
 
     def _task3_descend_to_tin(self) -> None:
-        self._publish_vision_mode("TASK3", ["tin"])
-
         now = time.monotonic()
         tin = self._get_nearest_resource_tin(now)
 
@@ -2138,7 +2144,6 @@ class UavMissionNode(Node):
 
         if abs(target_z - self.local_position[2]) <= 0.02:
             self._publish_position_hold()
-            self._publish_vision_mode("OFF", [])
             self._change_state("PICK")
             return
 
@@ -2254,12 +2259,6 @@ class UavMissionNode(Node):
     def _verify(self) -> None:
         self._publish_position_hold()
 
-        # 开启TIN视觉检测
-        self._publish_vision_mode(
-            "TASK3",
-            ["tin"],
-        )
-
         now = time.monotonic()
 
         if self.task3_verify_start_time is None:
@@ -2293,8 +2292,6 @@ class UavMissionNode(Node):
             < self.task3_verify_duration_s
         ):
             return
-
-        self._publish_vision_mode("OFF", [])
 
         expected_count = max(
             self.task3_tin_count - 1,
@@ -2447,12 +2444,6 @@ class UavMissionNode(Node):
     def _task3_place_resource(self) -> None:
         self._publish_position_hold()
 
-        # 开启circle视觉模型
-        self._publish_vision_mode(
-            "TASK3",
-            ["circle"],
-        )
-
         now = time.monotonic()
 
         # 等待新鲜的视觉结果
@@ -2527,8 +2518,7 @@ class UavMissionNode(Node):
             f"{self.task3_place_target_ned}"
         )
 
-        # 后续不持续进行视觉规划
-        self._publish_vision_mode("OFF", [])
+        # 后续沿用已选定的放置目标。
         self._change_state("MOVE_TO_PLACE_POSITION")
 
     def _task3_move_to_place_position(self) -> None:
@@ -2980,7 +2970,6 @@ class UavMissionNode(Node):
         self.task3_recover_retry_count += 1
 
         self._publish_position_hold()
-        self._publish_vision_mode("OFF", [])
 
         # “超过3次”表示第4次进入ERROR
         if (
@@ -3230,6 +3219,7 @@ class UavMissionNode(Node):
         self.hold_position_ned = None
         old_state = self.state
         self.state = new_state
+        self._sync_vision_control()
 
         self.get_logger().info(
             f"{self.mission}: {old_state} -> {new_state}"
@@ -3257,6 +3247,7 @@ class UavMissionNode(Node):
         old_mission = self.mission
         self.mission = new_mission
         self.state = initial_state
+        self._sync_vision_control()
 
         self.get_logger().info(
             f"Mission: {old_mission} -> {new_mission}, "
@@ -3272,7 +3263,6 @@ class UavMissionNode(Node):
         self.error_mode_request_time = None
 
         self.get_logger().error(message)
-        self._publish_vision_mode("OFF", [])
         self._change_mission("ERROR", "ERROR")
 
     def _local_position_is_fresh(self, now: float) -> bool:
@@ -3458,7 +3448,21 @@ class UavMissionNode(Node):
             f"Gripper command sent: {command}"
         )
 
-    # 控制开启视觉检测的发布函数
+    def _current_vision_command(self) -> tuple[str, tuple[str, ...]]:
+        return mission_vision_command(
+            self.mission, self.state,
+            self.begin_requests.get(self.mission, False),
+            self.finish_requests.get(self.mission, False),
+        )
+
+    def _sync_vision_control(self) -> None:
+        command = self._current_vision_command()
+        if command == self._last_vision_command:
+            return
+        self._last_vision_command = command
+        self._publish_vision_mode(command[0], list(command[1]))
+
+    # 所有感知模块共用同一个任务级控制消息。
     def _publish_vision_mode(
         self,
         mode: str,

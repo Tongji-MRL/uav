@@ -9,7 +9,7 @@ from launch.launch_description_sources import (
     PythonLaunchDescriptionSource,
 )
 
-#这里直接复用了原来的4份 launch，所以以后调整某个节点的参数，只需要修改对应的独立 launch 文件。
+# 独立 launch 统一启动；识别模型由 mission 的视觉模式指令启停。
 def generate_launch_description() -> LaunchDescription:
     package_share = get_package_share_directory(
         "uav_mission"
@@ -20,6 +20,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     launch_files = [
+        "mission_perception.launch.py",
         "downward_vision2.launch.py",
         "px4_gripper_control.launch.py",
         "landing_gear_control.launch.py",

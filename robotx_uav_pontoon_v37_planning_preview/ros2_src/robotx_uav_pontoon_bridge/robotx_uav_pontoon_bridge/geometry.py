@@ -5,14 +5,32 @@ World frame supplied by TF (RobotX: map_ned, +X north +Y east +Z down).
 No assumed fixed camera mounting or map origin.
 """
 import math
+import cv2
 import numpy as np
 
 
-def pixel_ray(u, v, fx, fy, cx, cy):
+def camera_parameters(info, input_rectified=True):
+    """Read a ROS CameraInfo-like object without assuming raw pixels are rectified."""
+    if input_rectified:
+        fx, fy, cx, cy = float(info.p[0]), float(info.p[5]), float(info.p[2]), float(info.p[6])
+        distortion = None
+    else:
+        fx, fy, cx, cy = float(info.k[0]), float(info.k[4]), float(info.k[2]), float(info.k[5])
+        distortion = np.asarray(info.d, dtype=float)
+    if not all(math.isfinite(x) for x in (fx, fy, cx, cy)) or fx <= 0 or fy <= 0:
+        raise ValueError('rectified_camera_info_P_invalid' if input_rectified else 'raw_camera_info_K_invalid')
+    return fx, fy, cx, cy, distortion
+
+
+def pixel_ray(u, v, fx, fy, cx, cy, distortion=None):
     values = (u, v, fx, fy, cx, cy)
     if not all(math.isfinite(float(x)) for x in values) or fx <= 0 or fy <= 0:
         raise ValueError('invalid_camera_intrinsics_or_uv')
-    return np.array([(u - cx) / fx, (v - cy) / fy, 1.0], dtype=float)
+    if distortion is None:
+        return np.array([(u - cx) / fx, (v - cy) / fy, 1.0], dtype=float)
+    matrix = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=float)
+    xy = cv2.undistortPoints(np.array([[[u, v]]], dtype=float), matrix, distortion)[0, 0]
+    return np.array([xy[0], xy[1], 1.0], dtype=float)
 
 
 def quat_to_rotation(x, y, z, w):
@@ -28,10 +46,10 @@ def quat_to_rotation(x, y, z, w):
     ], dtype=float)
 
 
-def optical_point_from_depth(u, v, depth_m, fx, fy, cx, cy):
+def optical_point_from_depth(u, v, depth_m, fx, fy, cx, cy, distortion=None):
     if not math.isfinite(float(depth_m)) or depth_m <= 0:
         raise ValueError('invalid_depth')
-    return pixel_ray(u, v, fx, fy, cx, cy) * depth_m
+    return pixel_ray(u, v, fx, fy, cx, cy, distortion) * depth_m
 
 
 def transform_point(point_optical, rotation_world_from_optical, translation_world):
@@ -43,14 +61,15 @@ def transform_point(point_optical, rotation_world_from_optical, translation_worl
 
 def intersect_plane_z(u, v, fx, fy, cx, cy, rotation_world_from_optical,
                       translation_world, plane_z_world, min_cos=0.15,
-                      max_range_m=50.0):
+                      max_range_m=50.0, distortion=None):
     """Ray intersection with horizontal z=plane_z_world; returns world XYZ.
 
     plane_z_world must be a measured/verified pontoon TOP height in map_ned.
     Rejects intersections behind camera, near-parallel rays and excessive range.
     """
     origin = np.asarray(translation_world, dtype=float)
-    direction = rotation_world_from_optical @ pixel_ray(u, v, fx, fy, cx, cy)
+    ray = pixel_ray(u, v, fx, fy, cx, cy, distortion)
+    direction = rotation_world_from_optical @ ray
     norm = float(np.linalg.norm(direction))
     if not np.all(np.isfinite(origin)) or not np.all(np.isfinite(direction)):
         raise ValueError('invalid_ray_or_tf')
@@ -61,7 +80,7 @@ def intersect_plane_z(u, v, fx, fy, cx, cy, rotation_world_from_optical,
     t = (float(plane_z_world) - origin[2]) / direction[2]
     if t <= 0 or t * norm > max_range_m:
         raise ValueError('plane_intersection_out_of_range')
-    return transform_point(t * pixel_ray(u, v, fx, fy, cx, cy), rotation_world_from_optical, origin)
+    return transform_point(t * ray, rotation_world_from_optical, origin)
 
 
 def median_depth_patch(depth_m, u, v, half_width=2, min_samples=5,
