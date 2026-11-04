@@ -169,6 +169,31 @@ def map_objects(payload):
     return objects
 
 
+def task3_objects(payload, requested_types):
+    """Validate one gripper batch; malformed geometry is not an empty sighting."""
+    if (not isinstance(payload, dict) or payload.get("task") != "TASK3"
+            or payload.get("frame") != "gripper" or not isinstance(payload.get("objects"), list)):
+        return None
+    allowed = {"platform", "tin", "circle"} & requested_types
+    objects = []
+    for item in payload["objects"]:
+        if not isinstance(item, dict) or not isinstance(item.get("type"), str):
+            return None
+        if item.get("type") not in allowed:
+            continue
+        raw_point = item.get("gripper_position")
+        point = _point(raw_point)
+        if (point is None or item.get("position_valid") is False or "id" not in item
+                or any(not isinstance(axis, (int, float)) or isinstance(axis, bool)
+                       for axis in raw_point)):
+            return None
+        objects.append({"type": item["type"], "color": item.get("color", "unknown"),
+                        "state": item.get("state", "static"), "id": item["id"],
+                        "gripper_position": point})
+    # An irrelevant delayed batch is not evidence that this task saw nothing.
+    return None if payload["objects"] and not objects else objects
+
+
 class MissionMapRecorder:
     """Accumulate MAP positions; pause/resume keeps the same survey records."""
 

@@ -4,8 +4,8 @@ mission_perception:
     beacons: /task1/beacons/results_json
     dock: /robotx/perception/uav/pontoon/observation
     platforms: /tongji_mrl/tsky/perception/platforms_ned
+    task3_targets: /tongji_mrl/tsky/perception/task3_targets_gripper
     map_result: /tongji_mrl/tsky/map_targets_ned
-    task1_buoy: /tongji_mrl/tsky/task1_buoy
   map_match_radius_m: 1.0
   map_history_limit: 64
   snapshot_directory: ~/.ros/uav_mission/maps

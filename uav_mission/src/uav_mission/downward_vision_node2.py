@@ -233,8 +233,8 @@ class DownwardVisionNode(Node):
             String,
             str(
                 topics.get(
-                    "task3_result",
-                    "/tongji_mrl/tsky/task3_target_gripper",
+                    "task3_targets",
+                    "/tongji_mrl/tsky/perception/task3_targets_gripper",
                 )
             ),
             10,

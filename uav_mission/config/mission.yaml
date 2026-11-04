@@ -11,8 +11,7 @@ uav_mission_manager:
     offboard_control_mode: /fmu/in/offboard_control_mode
     trajectory_setpoint: /fmu/in/trajectory_setpoint
 
-    task1_buoy: /tongji_mrl/twave/task1_buoy
-    task1_local_buoy: /tongji_mrl/tsky/task1_buoy
+    map_result: /tongji_mrl/tsky/map_targets_ned
     task1_notify: /tongji_mrl/tsky/task1
     task1_reply: /tongji_mrl/twave/task1
     task1_position: /tongji_mrl/twave/task1_position
@@ -31,7 +30,6 @@ uav_mission_manager:
     task3_platform: /tongji_mrl/twave/task3_platform
     
     vision_control: /tongji_mrl/tsky/downward_vision_control
-    task3_vision_result: /tongji_mrl/tsky/task3_target_gripper
     
     gripper_command: /task3/gripper/command
     
@@ -48,7 +46,6 @@ uav_mission_manager:
 
   target:
     receive_timeout_s: 30.0
-    task1_buoy_source: local # local: onboard perception; external: twave topic
     x_tolerance_m: 0.20
     y_tolerance_m: 0.20
     z_tolerance_m: 0.10

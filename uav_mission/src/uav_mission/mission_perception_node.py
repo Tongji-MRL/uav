@@ -1,4 +1,4 @@
-"""Publish unified MAP observations; keep survey history on disk."""
+"""Publish all task observations on one topic; keep MAP history on disk."""
 
 from __future__ import annotations
 
@@ -13,7 +13,8 @@ from std_msgs.msg import String
 import yaml
 
 from uav_common.mission_perception import (
-    MissionMapRecorder, adapt_beacons, adapt_dock, adapt_platform, map_objects, task1_blue_objects,
+    MissionMapRecorder, adapt_beacons, adapt_dock, adapt_platform, map_objects,
+    task1_blue_objects, task3_objects,
 )
 
 
@@ -42,7 +43,8 @@ class MissionPerceptionNode(Node):
         topics = config["topics"]
         # Compare resolved names too: a launch remap must not create feedback.
         output = self.resolve_topic_name(topics["map_result"])
-        if output in {self.resolve_topic_name(topics[key]) for key in ("beacons", "platforms", "dock")}:
+        if output in {self.resolve_topic_name(topics[key])
+                      for key in ("beacons", "platforms", "dock", "task3_targets")}:
             raise ValueError("MAP output must differ from all perception input topics")
         self.session_id = uuid4().hex
         self.mode, self.object_types = "OFF", set()
@@ -56,11 +58,11 @@ class MissionPerceptionNode(Node):
         control_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                  durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.map_pub = self.create_publisher(String, topics["map_result"], 10)
-        self.buoy_pub = self.create_publisher(String, topics["task1_buoy"], 10)
         self.control_sub = self.create_subscription(
             String, topics["vision_control"], self._control, control_qos)
         self.beacon_sub = self.create_subscription(String, topics["beacons"], self._beacons, 10)
         self.platform_sub = self.create_subscription(String, topics["platforms"], self._platforms, 10)
+        self.task3_sub = self.create_subscription(String, topics["task3_targets"], self._task3, 10)
         from robotx_uav_pontoon_interfaces.msg import PontoonObservation
         self.dock_sub = self.create_subscription(PontoonObservation, topics["dock"], self._dock, 10)
         self.timer = self.create_timer(0.5, self._tick)
@@ -106,12 +108,31 @@ class MissionPerceptionNode(Node):
         else:
             objects = task1_blue_objects(result)
             if objects:
-                self._publish_task1(objects, result_stamp(result))
+                self._publish_task1(objects, result)
 
     def _platforms(self, message):
         if self._enabled("platform", ("MAP",)):
             now = self._now()
             self._record("platform", adapt_platform(json.loads(message.data)), now)
+
+    def _task3(self, message):
+        if self.mode != "TASK3" or not self.object_types & {"platform", "tin", "circle"}:
+            return
+        try:
+            payload = json.loads(message.data)
+        except json.JSONDecodeError:
+            self.get_logger().warning("Ignored invalid TASK3 perception JSON")
+            return
+        objects = task3_objects(payload, self.object_types)
+        if objects is None:
+            self.get_logger().warning("Ignored TASK3 perception with invalid schema or coordinates")
+            return
+        stamp = payload.get("stamp", payload.get("rgb_stamp"))
+        self._publish(self.map_pub, {
+            "task": "TASK3", "frame": "gripper", "source": "downward",
+            "stamp": stamp, "rgb_stamp": payload.get("rgb_stamp", stamp),
+            "sequence": payload.get("sequence"), "objects": objects,
+        })
 
     def _dock(self, message):
         if not self._enabled("dock", ("MAP",)):
@@ -139,9 +160,13 @@ class MissionPerceptionNode(Node):
         now = self._now()
         self._record("dock", adapt_dock(payload), now)
 
-    def _publish_task1(self, objects, stamp):
-        self._publish(self.buoy_pub, {"task": "TASK1", "frame": "local_ned",
-                                    "stamp": stamp, "objects": objects})
+    def _publish_task1(self, objects, result):
+        stamp = result_stamp(result)
+        self._publish(self.map_pub, {
+            "task": "TASK1", "frame": "local_ned", "source": "buoy",
+            "stamp": stamp, "rgb_stamp": stamp, "sequence": result["sequence"],
+            "objects": objects,
+        })
 
     def _publish_map(self, source, result):
         stamp = result_stamp(result)

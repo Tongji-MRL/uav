@@ -11,7 +11,7 @@ downward_vision:
     vehicle_attitude: /fmu/out/vehicle_attitude
     # Internal platform input to mission_perception; it publishes the public MAP topic.
     map_platforms: /tongji_mrl/tsky/perception/platforms_ned
-    task3_result: /tongji_mrl/tsky/task3_target_gripper
+    task3_targets: /tongji_mrl/tsky/perception/task3_targets_gripper
 
     map_debug_result: /tongji_mrl/tsky/map_detection_debug
     task3_debug_result: /tongji_mrl/tsky/task3_detection_debug

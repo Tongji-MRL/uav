@@ -301,7 +301,6 @@ class UavMissionNode(Node):
         # ==============================================================
         self.task1_begin_time: float | None = None
         self.task1_buoy: dict[str, Any] | None = None
-        self.task1_buoy_source = target_cfg.get("task1_buoy_source", "local")
         self.task1_target: list[float] | None = None
         self.task1_usv_at_start = False
         self.task1_usv_at_end = False
@@ -580,13 +579,12 @@ class UavMissionNode(Node):
             self._on_local_position,
             px4_qos,
         )
-        # Select one producer; local and external use the same objects protocol.
-        buoy_topic = {
-            "local": topics.get("task1_local_buoy", "/tongji_mrl/tsky/task1_buoy"),
-            "external": topics.get("task1_buoy", "/tongji_mrl/twave/task1_buoy"),
-        }[self.task1_buoy_source]
-        self.task1_buoy_sub = self.create_subscription(
-            String, str(buoy_topic), self._on_task1_buoy, 10,
+        # Every task consumes perception through the same public result topic.
+        self.perception_sub = self.create_subscription(
+            String,
+            str(topics.get("map_result", "/tongji_mrl/tsky/map_targets_ned")),
+            self._on_perception_result,
+            10,
         )
         self.task1_reply_sub = self.create_subscription(
             String,
@@ -621,18 +619,6 @@ class UavMissionNode(Node):
                 )
             ),
             self._on_task3_platform,
-            10,
-        )
-
-        self.task3_vision_sub = self.create_subscription(
-            String,
-            str(
-                topics.get(
-                    "task3_vision_result",
-                    "/tongji_mrl/tsky/task3_target_gripper",
-                )
-            ),
-            self._on_task3_vision,
             10,
         )
 
@@ -1050,6 +1036,48 @@ class UavMissionNode(Node):
             msg,
             now,
         )
+
+    def _on_perception_result(self, msg: String) -> None:
+        """Dispatch one source batch only to its active task and coordinate frame."""
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError as exc:
+            self.get_logger().warning(f"Ignored invalid perception JSON: {exc}")
+            return
+        if not isinstance(payload, dict):
+            return
+        mode, allowed_types = self._current_vision_command()
+        expected_frame = {"TASK1": "local_ned", "TASK3": "gripper"}.get(mode)
+        if (expected_frame is None or payload.get("task") != mode
+                or payload.get("frame") != expected_frame):
+            return
+        objects = payload.get("objects")
+        if (not isinstance(objects, list)
+                or any(not isinstance(item, dict) or not isinstance(item.get("type"), str)
+                       for item in objects)):
+            return
+        selected = [item for item in objects if item["type"] in allowed_types]
+        if objects and not selected:
+            return
+        position_key = "NED_position" if mode == "TASK1" else "gripper_position"
+        for item in selected:
+            point = item.get(position_key)
+            if (item.get("position_valid") is False
+                    or not isinstance(point, (list, tuple)) or len(point) != 3
+                    or not all(isinstance(axis, (int, float)) and not isinstance(axis, bool)
+                               and math.isfinite(axis) for axis in point)):
+                # A malformed batch must not refresh TASK3 with an apparent
+                # empty detection, which the grasp logic can interpret as success.
+                return
+        if mode == "TASK1":
+            selected = [item for item in selected if item.get("state_valid") is not False]
+        payload["objects"] = selected
+        routed = String()
+        routed.data = json.dumps(payload, ensure_ascii=False)
+        if mode == "TASK1":
+            self._on_task1_buoy(routed)
+        else:
+            self._on_task3_vision(routed)
 
     def _on_task1_buoy(self, msg: String) -> None:
         try:
