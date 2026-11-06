@@ -32,6 +32,8 @@ setup(
         "console_scripts": [
             "uav_mission_manager = "
             "uav_mission.uav_mission_node:main",
+            "ascend_hover = "
+            "uav_mission.ascend_hover_node:main",
             "downward_vision = "
             "uav_mission.downward_vision_node:main",
             "downward_vision2 = "
