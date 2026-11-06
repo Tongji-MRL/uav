@@ -112,6 +112,8 @@ dock 默认接原始 RGB，使用 CameraInfo 的 K/D 修正射线；深度需要
 ros2 launch uav_mission mission_perception.launch.py
 ```
 
+已有 Arducam 图像发布器时，可加 `start_buoy_camera:=false`。下视节点仍通过 `downward_vision2.launch.py` 启动；总启动文件包含以上两者。
+
 ## UAV JSON 状态
 
 `uav_status_json_node.py` 从 PX4 读取控制状态、着陆状态、GNSS 位置、
@@ -124,5 +126,5 @@ ros2 launch uav_mission uav_status_json.launch.py
 ros2 topic echo /tongji_mrl/tsky/uav_status
 ```
 
-已有 Arducam 图像发布器时，可加 `start_buoy_camera:=false`。下视节点仍通过 `downward_vision2.launch.py` 启动；总启动文件包含以上两者。
+
 
