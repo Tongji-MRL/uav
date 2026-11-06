@@ -126,5 +126,26 @@ ros2 launch uav_mission uav_status_json.launch.py
 ros2 topic echo /tongji_mrl/tsky/uav_status
 ```
 
+## 自主take off
+
+该节点用于控制无人机从当前位置自主上升至相对高度 2 m，并保持当前位置和航向悬停。节点启动后会等待有效的 PX4 本地位置与姿态数据；飞手完成 Arm 后，节点自动申请进入 Offboard 模式并开始上升。节点不会自动 Arm。
+
+编译并启动：
+
+```bash
+cd /home/robotx/robotx_ws
+source /opt/ros/humble/setup.bash
+colcon build --packages-up-to uav_mission --symlink-install
+source install/setup.bash
+ros2 launch uav_mission ascend_hover.launch.py
+飞行流程：
+等待位置与姿态 → 等待飞手 Arm → 进入 Offboard
+→ 上升至相对 2 m → 定点悬停
+如需调整高度，可修改 uav_mission/config/ascend_hover.yaml：
+target_altitude_m: 2.0
+需要人工接管时，飞手通过遥控器或地面站将飞行模式切换为 Position。节点检测到 POSCTL 后会停止发送 Offboard 心跳和轨迹指令，将控制权交还飞手。
+该节点必须独立启动，不要与 all_uav_nodes.launch.py 同时运行，以免多个节点同时向 PX4 发送 Offboard 控制指令。
+
+
 
 
