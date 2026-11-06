@@ -6,4 +6,4 @@ uav_mission/src/uav_mission 这是主节点的位置，由这个主节点来控�
 
 buoy、dock 已按任务接入；MAP 位置记录和配置见 uav_mission/README.md。
 
-ground和air test需要的uav发布其相关状态的代码以及上传，详细见：
+ground和air test需要的uav发布其相关状态的代码以及上传，详细见：uav_mission/README.md中的“UAV JSON 状态”
