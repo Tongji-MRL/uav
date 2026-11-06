@@ -5,3 +5,5 @@ uav_mission/src/uav_mission 这是主节点的位置，由这个主节点来控�
 2.通信按照比赛/主规划器要求书写，但是还不是用编码的版本
 
 buoy、dock 已按任务接入；MAP 位置记录和配置见 uav_mission/README.md。
+
+ground和air test需要的uav发布其相关状态的代码以及上传，详细见：
