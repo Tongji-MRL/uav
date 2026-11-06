@@ -1,7 +1,7 @@
 uav_ascend_hover:
   ros__parameters:
     # Relative height above the position recorded when this node starts.
-    target_altitude_m: 10.0
+    target_altitude_m: 2.0
     altitude_tolerance_m: 0.20
     arrival_stable_s: 1.0
 
