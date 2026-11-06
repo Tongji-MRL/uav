@@ -42,6 +42,10 @@ setup(
             "uav_mission.px4_gripper_control_node:main",
             "landing_gear_control = "
             "uav_mission.landing_gear_control_node:main",
+            "uav_heartbeat = "
+            "uav_mission.uav_heartbeat_node:main",
+            "uav_status_json = "
+            "uav_mission.uav_status_json_node:main",
         ],
     },
 )

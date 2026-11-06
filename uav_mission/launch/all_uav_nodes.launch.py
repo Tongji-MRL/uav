@@ -25,6 +25,8 @@ def generate_launch_description() -> LaunchDescription:
         "px4_gripper_control.launch.py",
         "landing_gear_control.launch.py",
         "mission.launch.py",
+        "uav_heartbeat.launch.py",
+        "uav_status_json.launch.py",
     ]
 
     return LaunchDescription(

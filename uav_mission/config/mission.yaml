@@ -1,7 +1,7 @@
 uav_mission_manager:
   runtime:
     update_rate_hz: 10.0
-    progress_rate_hz: 1.0
+    progress_rate_hz: 5.0
 
   topics:
     task_command: /tongji_mrl/tsky/task_cmd

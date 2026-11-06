@@ -3662,9 +3662,6 @@ class UavMissionNode(Node):
     # 统一进度发布
     # ==================================================================
     def _publish_progress(self) -> None:
-        if not self.control_started:
-            return
-
         msg = String()
         msg.data = json.dumps(
             {

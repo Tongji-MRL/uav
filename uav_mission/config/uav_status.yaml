@@ -1,0 +1,17 @@
+uav_status:
+  identity:
+    # Set this to the Drone ID assigned to this aircraft.
+    vehicle_id: UAV1
+
+  runtime:
+    publish_rate_hz: 5.0
+    telemetry_timeout_s: 1.0
+
+  topics:
+    output: /tongji_mrl/tsky/uav_status
+    vehicle_status: /fmu/out/vehicle_status_v1
+    vehicle_global_position: /fmu/out/vehicle_global_position
+    vehicle_local_position: /fmu/out/vehicle_local_position_v1
+    vehicle_attitude: /fmu/out/vehicle_attitude
+    vehicle_land_detected: /fmu/out/vehicle_land_detected
+    battery_status: /fmu/out/battery_status

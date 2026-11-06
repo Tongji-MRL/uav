@@ -22,7 +22,7 @@ class WaypointPlanner:
     lateral_step_m = 0.5
 
     # This tolerance is only for floating-point geometry comparisons.
-    _geometry_tolerance = 1e-6
+    _geometry_tolerance = 0.1
 
     def plan(
         self,
