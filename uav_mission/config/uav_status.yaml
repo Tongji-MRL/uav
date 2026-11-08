@@ -5,7 +5,7 @@ uav_status:
 
   runtime:
     publish_rate_hz: 5.0
-    telemetry_timeout_s: 1.0
+    telemetry_timeout_s: 4.0
 
   topics:
     output: /tongji_mrl/tsky/uav_status

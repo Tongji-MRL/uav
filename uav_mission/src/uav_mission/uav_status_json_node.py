@@ -173,6 +173,14 @@ class UavStatusJsonNode(Node):
             px4_qos,
         )
 
+        # SUB的geofense
+        self.geofence_sub = self.create_subscription(
+            String,
+            "/tongji_mrl/tsky/uav_geofense_sub",
+            self._on_geofence_received,
+            10,
+        )
+
         output_topic = self._topic(topics, "output")
         self.status_pub = self.create_publisher(String, output_topic, 10)
         self.status_timer = self.create_timer(
@@ -184,6 +192,13 @@ class UavStatusJsonNode(Node):
             "UAV JSON status publisher started: "
             f"vehicle_id={self.vehicle_id}, topic={output_topic}, "
             f"rate={self.publish_rate_hz:g} Hz"
+        )
+
+        # uav把geofense发出去
+        self.geofence_pub = self.create_publisher(
+            String,
+            "/tongji_mrl/tsky/uav_geofense_pub",
+            10,
         )
 
     def _load_config(self) -> dict[str, Any]:
@@ -236,6 +251,15 @@ class UavStatusJsonNode(Node):
             self.robot_state = self.STATE_MANUAL
         self.last_vehicle_status_time = time.monotonic()
 
+    def _on_geofence_received(self, msg: String) -> None:
+        output_msg = String()
+        output_msg.data = msg.data
+        self.geofence_pub.publish(output_msg)
+
+        self.get_logger().info(
+            f"Geofence message relayed: {msg.data}"
+        )
+
     def _on_global_position(self, msg: VehicleGlobalPosition) -> None:
         if not bool(msg.lat_lon_valid) or not bool(msg.alt_valid):
             self.latitude = None
@@ -255,18 +279,32 @@ class UavStatusJsonNode(Node):
         self.last_global_position_time = time.monotonic()
 
     def _on_local_position(self, msg: VehicleLocalPosition) -> None:
-        if not bool(msg.v_xy_valid):
-            self.speed_mps = None
-            return
+        # if not bool(msg.v_xy_valid):
+        #     self.get_logger().warning(
+        #         f"Horizontal velocity invalid: "
+        #         f"v_xy_valid={msg.v_xy_valid}, "
+        #         f"vx={msg.vx}, vy={msg.vy}"
+        #     )
+        #     self.speed_mps = None
+        #     return
 
         vx = float(msg.vx)
         vy = float(msg.vy)
+
         if not math.isfinite(vx) or not math.isfinite(vy):
+            self.get_logger().warning(
+                f"Non-finite velocity: vx={vx}, vy={vy}"
+            )
             self.speed_mps = None
             return
 
         self.speed_mps = math.hypot(vx, vy)
         self.last_local_position_time = time.monotonic()
+
+        # self.get_logger().info(
+        #     f"Speed: {self.speed_mps:.3f} m/s "
+        #     f"(vx={vx:.3f}, vy={vy:.3f})"
+        #)
 
     def _on_attitude(self, msg: VehicleAttitude) -> None:
         w, x, y, z = (float(value) for value in msg.q)
@@ -278,6 +316,7 @@ class UavStatusJsonNode(Node):
             1.0 - 2.0 * (y * y + z * z),
         )
         self.heading_deg = (math.degrees(yaw_rad) + 360.0) % 360.0
+        #self.get_logger().warning(f"Heading: {self.heading_deg:.2f} deg")
         self.last_attitude_time = time.monotonic()
 
     def _on_land_detected(self, msg: VehicleLandDetected) -> None:
@@ -321,12 +360,12 @@ class UavStatusJsonNode(Node):
             and all(
                 value is not None
                 for value in (
-                    self.latitude,
-                    self.longitude,
-                    self.altitude_hae_m,
-                    self.speed_mps,
+                    # self.latitude,
+                    # self.longitude,
+                    #self.altitude_hae_m,
+                    #self.speed_mps,
                     self.heading_deg,
-                    self.battery_status,
+                    # self.battery_status,
                 )
             )
         )
@@ -334,11 +373,11 @@ class UavStatusJsonNode(Node):
     def _telemetry_is_fresh(self, now: float) -> bool:
         timestamps = (
             self.last_vehicle_status_time,
-            self.last_global_position_time,
+            #self.last_global_position_time,
             self.last_local_position_time,
             self.last_attitude_time,
             self.last_land_detected_time,
-            self.last_battery_time,
+            #self.last_battery_time,
         )
         return all(
             timestamp is not None
@@ -349,6 +388,10 @@ class UavStatusJsonNode(Node):
     def _publish_status(self) -> None:
         now = time.monotonic()
         if not self._telemetry_is_ready() or not self._telemetry_is_fresh(now):
+            if not self._telemetry_is_ready():
+                self.get_logger().warning("telemetry is not ready due to none value")
+            if not self._telemetry_is_fresh(now):
+                self.get_logger().warning("telemetry is not ready due to delayed value")
             if now - self.last_warning_time >= 5.0:
                 self.last_warning_time = now
                 self.get_logger().warning(
@@ -369,7 +412,7 @@ class UavStatusJsonNode(Node):
             "altitude_hae_m": self.altitude_hae_m,
             "spd_mps": self.speed_mps,
             "heading_deg": self.heading_deg,
-            "battery_status": self.battery_status,
+            #"battery_status": self.battery_status,
         }
 
         message = String()

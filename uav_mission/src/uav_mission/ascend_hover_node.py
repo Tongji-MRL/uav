@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Ascend to a relative altitude, hover, and yield to Position mode."""
+"""Ascend, hover for a configured duration, land, or yield to Position mode."""
 
 from __future__ import annotations
 
 import math
 import time
+import json
+
 from enum import Enum, auto
 
 import rclpy
@@ -24,6 +26,7 @@ from rclpy.qos import (
     ReliabilityPolicy,
 )
 
+from std_msgs.msg import String
 
 class FlightState(Enum):
     """States of the autonomous ascend-and-hover mission."""
@@ -33,12 +36,14 @@ class FlightState(Enum):
     PREPARE_OFFBOARD = auto()
     ASCEND = auto()
     HOVER = auto()
+    LAND = auto()
+    FINISHED = auto()
     MANUAL_CONTROL = auto()
     ERROR = auto()
 
 
 class AscendHoverNode(Node):
-    """Fly vertically to a relative altitude and hold until pilot takeover."""
+    """Fly vertically, hover, then land unless the pilot takes over."""
 
     def __init__(self) -> None:
         super().__init__("uav_ascend_hover")
@@ -47,6 +52,7 @@ class AscendHoverNode(Node):
         self.declare_parameter("target_altitude_m", 10.0)
         self.declare_parameter("altitude_tolerance_m", 0.20)
         self.declare_parameter("arrival_stable_s", 1.0)
+        self.declare_parameter("hover_duration_s", 600.0)
         self.declare_parameter("update_rate_hz", 20.0)
         self.declare_parameter("local_position_timeout_s", 1.0)
         self.declare_parameter("prestream_duration_s", 1.0)
@@ -83,6 +89,9 @@ class AscendHoverNode(Node):
         self.arrival_stable_s = float(
             self.get_parameter("arrival_stable_s").value
         )
+        self.hover_duration_s = float(
+            self.get_parameter("hover_duration_s").value
+        )
         self.update_rate_hz = float(
             self.get_parameter("update_rate_hz").value
         )
@@ -108,11 +117,20 @@ class AscendHoverNode(Node):
         self.vehicle_armed = False
         self.vehicle_in_offboard = False
         self.vehicle_in_position = False
+        self.vehicle_in_auto_land = False
         self.offboard_was_active = False
 
         self.prestream_start_time: float | None = None
         self.last_offboard_request_time: float | None = None
         self.arrival_start_time: float | None = None
+        self.hover_start_time: float | None = None
+        self.last_land_request_time: float | None = None
+
+        self.run_start_received = False
+
+        self.last_position_request_time: float | None = None
+
+        self.current_error: str | None = None
 
         px4_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -140,6 +158,13 @@ class AscendHoverNode(Node):
             px4_qos,
         )
 
+        self.run_start_sub = self.create_subscription(
+            String,
+            "/tongji_mrl/mission/run_start",
+            self._on_run_start,
+            10,
+        )
+
         self.offboard_control_mode_pub = self.create_publisher(
             OffboardControlMode,
             str(self.get_parameter("topics.offboard_control_mode").value),
@@ -156,6 +181,17 @@ class AscendHoverNode(Node):
             px4_qos,
         )
 
+        self.mission_status_pub = self.create_publisher(
+            String,
+            "/tongji_mrl/mission/status",
+            10,
+        )
+
+        self.mission_status_timer = self.create_timer(
+            0.1,  # 0.1秒一次，即10Hz
+            self._publish_mission_status,
+        )
+
         self.update_timer = self.create_timer(
             1.0 / self.update_rate_hz,
             self._tick,
@@ -169,6 +205,7 @@ class AscendHoverNode(Node):
         positive_values = {
             "target_altitude_m": self.target_altitude_m,
             "altitude_tolerance_m": self.altitude_tolerance_m,
+            "hover_duration_s": self.hover_duration_s,
             "update_rate_hz": self.update_rate_hz,
             "local_position_timeout_s": self.local_position_timeout_s,
             "offboard_request_interval_s": self.offboard_request_interval_s,
@@ -198,6 +235,9 @@ class AscendHoverNode(Node):
         self.vehicle_in_position = (
             msg.nav_state == VehicleStatus.NAVIGATION_STATE_POSCTL
         )
+        self.vehicle_in_auto_land = (
+            msg.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LAND
+        )
 
         if self.vehicle_in_offboard:
             self.offboard_was_active = True
@@ -223,6 +263,12 @@ class AscendHoverNode(Node):
             1.0 - 2.0 * (y * y + z * z),
         )
 
+    def _on_run_start(self, msg: String) -> None:
+        self.run_start_received = True
+        self.get_logger().info(
+            f"RunStart received: {msg.data}"
+        )
+
     # ------------------------------------------------------------------
     # State machine.
     # ------------------------------------------------------------------
@@ -233,7 +279,11 @@ class AscendHoverNode(Node):
             self.offboard_was_active
             and self.vehicle_in_position
             and self.state
-            not in {FlightState.MANUAL_CONTROL, FlightState.ERROR}
+            not in {
+                FlightState.MANUAL_CONTROL,
+                FlightState.FINISHED,
+                FlightState.ERROR,
+            }
         ):
             self._change_state(
                 FlightState.MANUAL_CONTROL,
@@ -250,7 +300,14 @@ class AscendHoverNode(Node):
             self._ascend()
         elif self.state == FlightState.HOVER:
             self._hover()
-        elif self.state in {FlightState.MANUAL_CONTROL, FlightState.ERROR}:
+        elif self.state == FlightState.LAND:
+            self._land()
+        elif self.state == FlightState.ERROR:
+            self._handle_error()
+        elif self.state in {
+            FlightState.MANUAL_CONTROL,
+            FlightState.FINISHED,
+        }:
             # Critical handover rule: publish no Offboard heartbeat or setpoint.
             return
 
@@ -280,13 +337,17 @@ class AscendHoverNode(Node):
     def _wait_for_arm(self) -> None:
         if not self._local_position_is_fresh(time.monotonic()):
             return
+
         if not self.vehicle_armed:
+            return
+
+        if not self.run_start_received:
             return
 
         self.prestream_start_time = time.monotonic()
         self._change_state(
             FlightState.PREPARE_OFFBOARD,
-            "Vehicle armed; pre-streaming the hold setpoint",
+            "Vehicle armed and RunStart received; preparing Offboard",
         )
 
     def _prepare_offboard(self) -> None:
@@ -345,19 +406,88 @@ class AscendHoverNode(Node):
             return
 
         if now - self.arrival_start_time >= self.arrival_stable_s:
+            self.hover_start_time = now
             self._change_state(
                 FlightState.HOVER,
-                f"Reached {self.target_altitude_m:g} m; holding position",
+                f"Reached {self.target_altitude_m:g} m; hovering for "
+                f"{self.hover_duration_s:g} seconds",
             )
 
     def _hover(self) -> None:
-        if not self._active_control_is_safe(time.monotonic()):
+        now = time.monotonic()
+        if not self._active_control_is_safe(now):
             return
         if self.target_ned is None:
             self._set_error("Hover target is unavailable")
             return
 
         self._publish_position_setpoint(self.target_ned)
+
+        if self.hover_start_time is None:
+            self.hover_start_time = now
+
+        if now - self.hover_start_time >= self.hover_duration_s:
+            self._change_state(
+                FlightState.LAND,
+                "Hover duration completed; requesting landing",
+            )
+
+    def _land(self) -> None:
+        now = time.monotonic()
+
+        if not self.vehicle_armed:
+            self._change_state(
+                FlightState.FINISHED,
+                "Vehicle disarmed after landing",
+            )
+            return
+
+        # PX4已经进入自动降落，停止发送Offboard输出。
+        if self.vehicle_in_auto_land:
+            return
+
+        # 等待PX4接受Land命令期间继续保持当前位置。
+        if not self.vehicle_in_offboard:
+            self._set_error("Land mode was not accepted by PX4")
+            return
+
+        if not self._require_fresh_position(now):
+            return
+
+        if self.target_ned is None:
+            self._set_error("Landing hold target is unavailable")
+            return
+
+        self._publish_position_setpoint(self.target_ned)
+
+        if (
+            self.last_land_request_time is None
+            or now - self.last_land_request_time
+            >= self.offboard_request_interval_s
+        ):
+            self._request_land()
+            self.last_land_request_time = now
+
+    def _handle_error(self) -> None:
+        # PX4已经进入Position，交给飞手控制。
+        if self.vehicle_in_position:
+            self._change_state(
+                FlightState.MANUAL_CONTROL,
+                "Position mode confirmed; pilot has control",
+            )
+            return
+
+        # 未进入Position就持续重发请求。
+        now = time.monotonic()
+
+        if (
+            self.last_position_request_time is None
+            or now - self.last_position_request_time
+            >= self.offboard_request_interval_s
+        ):
+            self._request_position_mode()
+            self.last_position_request_time = now
+
 
     # ------------------------------------------------------------------
     # Safety and state helpers.
@@ -397,14 +527,39 @@ class AscendHoverNode(Node):
         )
 
     def _set_error(self, message: str) -> None:
+        self.current_error = message
+
         if self.state == FlightState.ERROR:
             return
+
         old_state = self.state
         self.state = FlightState.ERROR
+
         self.get_logger().error(
             f"State: {old_state.name} -> ERROR; {message}. "
-            "Offboard output has stopped; PX4 failsafe is responsible for recovery."
+            "Stopping Offboard output and requesting Position mode."
         )
+
+        self._request_position_mode()
+        self.last_position_request_time = time.monotonic()
+
+    def _publish_mission_status(self) -> None:
+        payload = {
+            "vehicle": "uav",
+            "task": "TEST",
+            "progress": self.state.name,
+            "error": self.current_error,
+            "command": None,
+        }
+
+        msg = String()
+        msg.data = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+        self.mission_status_pub.publish(msg)
 
     # ------------------------------------------------------------------
     # PX4 output helpers.
@@ -415,6 +570,33 @@ class AscendHoverNode(Node):
         msg.param1 = 1.0
         msg.param2 = 6.0
         msg.command = VehicleCommand.VEHICLE_CMD_DO_SET_MODE
+        msg.target_system = 1
+        msg.target_component = 1
+        msg.source_system = 1
+        msg.source_component = 1
+        msg.from_external = True
+        self.vehicle_command_pub.publish(msg)
+
+    def _request_position_mode(self) -> None:
+        msg = VehicleCommand()
+        msg.timestamp = self.get_clock().now().nanoseconds // 1000
+
+        msg.param1 = 1.0
+        msg.param2 = 3.0  # PX4 Position/POSCTL
+        msg.command = VehicleCommand.VEHICLE_CMD_DO_SET_MODE
+
+        msg.target_system = 1
+        msg.target_component = 1
+        msg.source_system = 1
+        msg.source_component = 1
+        msg.from_external = True
+
+        self.vehicle_command_pub.publish(msg)
+
+    def _request_land(self) -> None:
+        msg = VehicleCommand()
+        msg.timestamp = self.get_clock().now().nanoseconds // 1000
+        msg.command = VehicleCommand.VEHICLE_CMD_NAV_LAND
         msg.target_system = 1
         msg.target_component = 1
         msg.source_system = 1

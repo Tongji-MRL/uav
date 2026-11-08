@@ -1,9 +1,10 @@
 uav_ascend_hover:
   ros__parameters:
     # Relative height above the position recorded when this node starts.
-    target_altitude_m: 2.0
+    target_altitude_m: 3.0
     altitude_tolerance_m: 0.20
     arrival_stable_s: 1.0
+    hover_duration_s: 600.0
 
     # PX4 Offboard requires a continuous control stream (> 2 Hz).
     update_rate_hz: 20.0
