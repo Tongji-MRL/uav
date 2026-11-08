@@ -1,46 +1,46 @@
-"""Pure-Python lawnmower waypoint generation for a rectangular NED area."""
+"""Coverage waypoints inside an explicitly closed polygon in local NED."""
 
 from __future__ import annotations
 
+import heapq
 import math
 from typing import Sequence
+
+from shapely.geometry import LineString, Point, Polygon
+from shapely.validation import explain_validity
 
 
 Point2D = tuple[float, float]
 
 
 class WaypointPlanner:
-    """Generate absolute local-NED XY scan-line endpoints for a rectangle.
+    """Generate paired scan endpoints for a simple polygon, including concavities.
 
-    The four input corners may be supplied in any order.  The longer side of
-    the rectangle is used as the sweep direction and the shorter side is used
-    as the lateral direction.  Safety margin and lateral step are fixed class
-    settings; callers only provide the four rectangle corners.
+    Input contains n + 1 ordered points for n >= 3 edges: the last point must
+    repeat the first.  Clockwise and counterclockwise boundaries are accepted;
+    vertices are never angle-sorted or automatically closed.  Scan segments
+    follow the longest boundary edge and are clipped to the inset polygon.
     """
 
     safety_margin_m = 0.3
     lateral_step_m = 0.5
 
-    # This tolerance is only for floating-point geometry comparisons.
-    _geometry_tolerance = 0.1
+    _coordinate_tolerance_m = 1e-6
+    _area_tolerance_m2 = 1e-6
+    _numeric_tolerance_m = 1e-9
 
     def plan(
         self,
         corners_ned_xy: Sequence[Sequence[float]],
     ) -> list[list[float]]:
         """Return paired ``[north, east]`` endpoints without a flight order."""
-        corners = self._parse_corners(corners_ned_xy)
-        ordered = self._order_corners(corners)
+        vertices = self.validate_polygon(corners_ned_xy)
         edges = [
-            self._subtract(ordered[(index + 1) % 4], ordered[index])
-            for index in range(4)
+            self._subtract(vertices[(index + 1) % len(vertices)], point)
+            for index, point in enumerate(vertices)
         ]
-        lengths = [self._norm(edge) for edge in edges]
-        self._validate_rectangle(edges, lengths)
 
-        # Adjacent edges describe the two rectangle axes.  Sweep along the
-        # longer one to minimize the number of turns.
-        sweep_edge = edges[0] if lengths[0] >= lengths[1] else edges[1]
+        sweep_edge = max(edges, key=self._norm)
         sweep_length = self._norm(sweep_edge)
         sweep_axis = (
             sweep_edge[0] / sweep_length,
@@ -49,61 +49,105 @@ class WaypointPlanner:
         sweep_axis = self._canonical_direction(sweep_axis)
         lateral_axis = (-sweep_axis[1], sweep_axis[0])
 
-        centre = (
-            sum(point[0] for point in ordered) / 4.0,
-            sum(point[1] for point in ordered) / 4.0,
-        )
-        sweep_projections = [
-            self._dot(self._subtract(point, centre), sweep_axis)
-            for point in ordered
-        ]
-        lateral_projections = [
-            self._dot(self._subtract(point, centre), lateral_axis)
-            for point in ordered
-        ]
-
-        sweep_min = min(sweep_projections) + self.safety_margin_m
-        sweep_max = max(sweep_projections) - self.safety_margin_m
-        lateral_min = min(lateral_projections) + self.safety_margin_m
-        lateral_max = max(lateral_projections) - self.safety_margin_m
+        origin = vertices[0]
+        local_polygon = Polygon([
+            (self._dot(self._subtract(point, origin), sweep_axis),
+             self._dot(self._subtract(point, origin), lateral_axis))
+            for point in vertices
+        ])
+        scan_area = self._inset_polygon(local_polygon)
+        sweep_min, lateral_min, sweep_max, lateral_max = scan_area.bounds
 
         lateral_positions = self._lane_positions(lateral_min, lateral_max)
+        # A projected horizontal edge can acquire a tiny slope.  Move extreme
+        # scan lines just inside so a boundary lane does not become a point.
+        roundoff = min(
+            max(self._numeric_tolerance_m,
+                8 * math.ulp(max(abs(lateral_min), abs(lateral_max)))),
+            (lateral_max - lateral_min) / 4.0,
+        )
         waypoints: list[list[float]] = []
         for lateral_position in lateral_positions:
-            first = self._from_local_axes(
-                centre,
-                sweep_axis,
-                lateral_axis,
-                sweep_min,
-                lateral_position,
+            lateral_position = min(
+                max(lateral_position, lateral_min + roundoff),
+                lateral_max - roundoff,
             )
-            second = self._from_local_axes(
-                centre,
-                sweep_axis,
-                lateral_axis,
-                sweep_max,
-                lateral_position,
+            scan_line = LineString([
+                (sweep_min, lateral_position), (sweep_max, lateral_position)
+            ])
+            segments = self._line_segments(scan_area.intersection(scan_line))
+            intervals = sorted(
+                (min(point[0] for point in segment.coords),
+                 max(point[0] for point in segment.coords))
+                for segment in segments
+                if segment.length > self._coordinate_tolerance_m
             )
-            # Every adjacent pair belongs to one scan line.  All pairs use the
-            # same geometric direction; no flight start or direction is
-            # selected here.
-            waypoints.extend(([first[0], first[1]], [second[0], second[1]]))
+            # A concave boundary may split one scan line into several spans.
+            for start, end in intervals:
+                for sweep_position in (start, end):
+                    point = self._from_local_axes(
+                        origin, sweep_axis, lateral_axis,
+                        sweep_position, lateral_position,
+                    )
+                    waypoints.append([point[0], point[1]])
 
+        if not waypoints:
+            raise ValueError("polygon has no usable scan lines after safety margin")
         return waypoints
 
-    def _lane_positions(self, start: float, end: float) -> list[float]:
-        positions = [start]
-        candidate = start + self.lateral_step_m
-        while candidate < end - self._geometry_tolerance:
-            positions.append(candidate)
-            candidate += self.lateral_step_m
+    def validate_polygon(
+        self, corners_ned_xy: Sequence[Sequence[float]],
+    ) -> list[Point2D]:
+        """Validate a closed ring and return its n vertices in input order.
 
-        if not math.isclose(
-            positions[-1],
-            end,
-            rel_tol=self._geometry_tolerance,
-            abs_tol=self._geometry_tolerance,
-        ):
+        This only checks the boundary; feasibility after applying the safety
+        margin is a separate planning check.
+        """
+        vertices = self._parse_corners(corners_ned_xy)
+        for index, point in enumerate(vertices):
+            following = vertices[(index + 1) % len(vertices)]
+            if math.dist(point, following) <= self._coordinate_tolerance_m:
+                raise ValueError("polygon edges must have non-zero length")
+            if any(math.dist(point, previous) <= self._coordinate_tolerance_m
+                   for previous in vertices[:index]):
+                raise ValueError("polygon vertices must be distinct")
+
+        polygon = Polygon(vertices)
+        if not polygon.is_valid:
+            raise ValueError(
+                "corners_ned_xy must form a simple closed polygon: "
+                + explain_validity(polygon)
+            )
+        if (not math.isfinite(polygon.area)
+                or polygon.area <= self._area_tolerance_m2):
+            raise ValueError("polygon must have finite non-zero area")
+        return vertices
+
+    @staticmethod
+    def _line_segments(geometry) -> list[LineString]:
+        if geometry.is_empty:
+            return []
+        if geometry.geom_type == "LineString":
+            return [geometry]
+        if hasattr(geometry, "geoms"):
+            return [line for part in geometry.geoms
+                    for line in WaypointPlanner._line_segments(part)]
+        return []  # A tangent point does not define a scan segment.
+
+    def _inset_polygon(self, polygon: Polygon) -> Polygon:
+        # Mitre joins keep straight edges and conservatively clear concavities.
+        inset = polygon.buffer(-self.safety_margin_m, join_style=2)
+        if inset.is_empty or inset.area <= self._area_tolerance_m2:
+            raise ValueError("polygon has no usable area after safety margin")
+        if inset.geom_type != "Polygon" or not inset.is_valid:
+            raise ValueError("polygon safety margin leaves disconnected scan areas")
+        return inset
+
+    def _lane_positions(self, start: float, end: float) -> list[float]:
+        count = int(math.floor((end - start) / self.lateral_step_m))
+        positions = [start + index * self.lateral_step_m
+                     for index in range(count + 1)]
+        if end - positions[-1] > self._numeric_tolerance_m:
             positions.append(end)
         return positions
 
@@ -111,69 +155,34 @@ class WaypointPlanner:
         self,
         corners_ned_xy: Sequence[Sequence[float]],
     ) -> list[Point2D]:
-        if len(corners_ned_xy) != 4:
-            raise ValueError("corners_ned_xy must contain exactly four points")
+        try:
+            if len(corners_ned_xy) < 4:
+                raise ValueError(
+                    "corners_ned_xy must contain at least three vertices "
+                    "plus the repeated first point"
+                )
+        except TypeError as exc:
+            raise ValueError("corners_ned_xy must be a sequence of points") from exc
 
         corners: list[Point2D] = []
         for index, point in enumerate(corners_ned_xy):
-            if len(point) != 2:
+            try:
+                if isinstance(point, (str, bytes)) or len(point) != 2:
+                    raise ValueError()
+                north = self._finite_number(point[0], f"corners_ned_xy[{index}][0]")
+                east = self._finite_number(point[1], f"corners_ned_xy[{index}][1]")
+            except (TypeError, KeyError, IndexError, ValueError) as exc:
                 raise ValueError(
-                    f"corners_ned_xy[{index}] must contain [north, east]"
-                )
-            north = self._finite_number(point[0], f"corners_ned_xy[{index}][0]")
-            east = self._finite_number(point[1], f"corners_ned_xy[{index}][1]")
+                    f"corners_ned_xy[{index}] must contain finite [north, east]"
+                ) from exc
             corners.append((north, east))
 
-        if len(set(corners)) != 4:
-            raise ValueError("corners_ned_xy must contain four unique points")
-        return corners
-
-    def _order_corners(self, corners: Sequence[Point2D]) -> list[Point2D]:
-        centre = (
-            sum(point[0] for point in corners) / 4.0,
-            sum(point[1] for point in corners) / 4.0,
-        )
-        ordered = sorted(
-            corners,
-            key=lambda point: math.atan2(
-                point[1] - centre[1], point[0] - centre[0]
-            ),
-        )
-
-        twice_area = sum(
-            ordered[index][0] * ordered[(index + 1) % 4][1]
-            - ordered[(index + 1) % 4][0] * ordered[index][1]
-            for index in range(4)
-        )
-        if abs(twice_area) <= self._geometry_tolerance:
-            raise ValueError("corners_ned_xy do not form a non-degenerate rectangle")
-
-        # Rotate the cycle to make output independent of the input order.
-        first_index = min(range(4), key=lambda index: ordered[index])
-        return ordered[first_index:] + ordered[:first_index]
-
-    def _validate_rectangle(
-        self,
-        edges: Sequence[Point2D],
-        lengths: Sequence[float],
-    ) -> None:
-        if any(length <= self._geometry_tolerance for length in lengths):
-            raise ValueError("rectangle edges must have non-zero length")
-
-        tolerance = self._geometry_tolerance
-        for index in range(4):
-            current = edges[index]
-            following = edges[(index + 1) % 4]
-            scale = lengths[index] * lengths[(index + 1) % 4]
-            if abs(self._dot(current, following)) > tolerance * scale:
-                raise ValueError("corners_ned_xy must form a rectangle")
-
-        if not math.isclose(
-            lengths[0], lengths[2], rel_tol=tolerance, abs_tol=tolerance
-        ) or not math.isclose(
-            lengths[1], lengths[3], rel_tol=tolerance, abs_tol=tolerance
-        ):
-            raise ValueError("opposite rectangle edges must have equal length")
+        if math.dist(corners[0], corners[-1]) > self._coordinate_tolerance_m:
+            raise ValueError(
+                "corners_ned_xy must be explicitly closed "
+                "(last point repeats first)"
+            )
+        return corners[:-1]
 
     @staticmethod
     def _canonical_direction(axis: Point2D) -> Point2D:
@@ -183,17 +192,17 @@ class WaypointPlanner:
 
     @staticmethod
     def _from_local_axes(
-        centre: Point2D,
+        origin: Point2D,
         sweep_axis: Point2D,
         lateral_axis: Point2D,
         sweep_position: float,
         lateral_position: float,
     ) -> Point2D:
         return (
-            centre[0]
+            origin[0]
             + sweep_position * sweep_axis[0]
             + lateral_position * lateral_axis[0],
-            centre[1]
+            origin[1]
             + sweep_position * sweep_axis[1]
             + lateral_position * lateral_axis[1],
         )
@@ -204,7 +213,7 @@ class WaypointPlanner:
             raise ValueError(f"{name} must be a finite number")
         try:
             parsed = float(value)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError(f"{name} must be a finite number") from exc
         if not math.isfinite(parsed):
             raise ValueError(f"{name} must be a finite number")
@@ -224,14 +233,21 @@ class WaypointPlanner:
 
 
 class WaypointOrderPlanner:
-    """Build a serpentine route starting at the nearest of four corners."""
+    """Order scan segments and connect them inside the supplied polygon."""
 
     def order(
         self,
         vehicle_ned: Sequence[float],
         waypoints_ned_xy: Sequence[Sequence[float]],
+        corners_ned_xy: Sequence[Sequence[float]] | None = None,
     ) -> list[list[float]]:
-        """Return a copied route ordered from the corner nearest the vehicle."""
+        """Start at the nearest of four traversal entries.
+
+        Supplying a closed polygon inserts internal transit vertices wherever
+        a straight connection would leave the inset boundary.  The approach
+        from the vehicle to the first waypoint is outside this scan route.
+        Omitting the boundary preserves the legacy straight-connection API.
+        """
         if len(vehicle_ned) != 3:
             raise ValueError("vehicle_ned must contain [north, east, down]")
         if any(isinstance(value, bool) for value in vehicle_ned):
@@ -300,11 +316,101 @@ class WaypointOrderPlanner:
                 + (route[0][1] - vehicle[1]) ** 2
             )
 
-        return min(candidates, key=start_distance_squared)
+        route = min(candidates, key=start_distance_squared)
+        if corners_ned_xy is None:
+            return route
+
+        planner = WaypointPlanner()
+        vertices = planner.validate_polygon(corners_ned_xy)
+        origin = vertices[0]
+        # Compute offsets close to the origin to reduce translation roundoff.
+        area = planner._inset_polygon(Polygon([
+            planner._subtract(point, origin) for point in vertices
+        ]))
+        local_route = [planner._subtract(point, origin) for point in route]
+        connected = _PolygonRouter(
+            area, planner._coordinate_tolerance_m,
+        ).connect(local_route)
+        return [[point[0] + origin[0], point[1] + origin[1]]
+                for point in connected]
+
+
+class _PolygonRouter:
+    """Use a visibility graph to connect endpoints within the inset boundary."""
+
+    def __init__(self, area: Polygon, tolerance: float) -> None:
+        # This allowance is only for projection/offset floating-point error.
+        self.area = area.buffer(tolerance, join_style=2)
+        self.vertices = list(area.exterior.coords)[:-1]
+        for ring in area.interiors:
+            self.vertices.extend(list(ring.coords)[:-1])
+        self.graph: list[list[tuple[int, float]]] | None = None
+
+    def _visible(self, first: Point2D, second: Point2D) -> bool:
+        if first == second:
+            return True
+        return self.area.covers(LineString([first, second]))
+
+    def _boundary_graph(self) -> list[list[tuple[int, float]]]:
+        if self.graph is None:
+            self.graph = [[] for _ in self.vertices]
+            for index, first in enumerate(self.vertices):
+                for following in range(index + 1, len(self.vertices)):
+                    second = self.vertices[following]
+                    if self._visible(first, second):
+                        distance = math.dist(first, second)
+                        self.graph[index].append((following, distance))
+                        self.graph[following].append((index, distance))
+        return self.graph
+
+    def _path(self, start: Point2D, end: Point2D) -> list[Point2D]:
+        if self._visible(start, end):
+            return [start, end]
+        graph = [list(neighbors) for neighbors in self._boundary_graph()]
+        nodes = self.vertices + [start, end]
+        start_index, end_index = len(self.vertices), len(self.vertices) + 1
+        graph.extend([[], []])
+        for endpoint in (start_index, end_index):
+            for index, vertex in enumerate(self.vertices):
+                if self._visible(nodes[endpoint], vertex):
+                    distance = math.dist(nodes[endpoint], vertex)
+                    graph[endpoint].append((index, distance))
+                    graph[index].append((endpoint, distance))
+
+        distances = [math.inf] * len(nodes)
+        distances[start_index] = 0.0
+        previous: dict[int, int] = {}
+        queue = [(0.0, start_index)]
+        while queue:
+            distance, current = heapq.heappop(queue)
+            if distance > distances[current]:
+                continue
+            if current == end_index:
+                path = [end]
+                while current != start_index:
+                    current = previous[current]
+                    path.append(nodes[current])
+                return list(reversed(path))
+            for following, length in graph[current]:
+                candidate = distance + length
+                if candidate < distances[following]:
+                    distances[following] = candidate
+                    previous[following] = current
+                    heapq.heappush(queue, (candidate, following))
+        raise ValueError("cannot connect scan segments inside polygon safety margin")
+
+    def connect(self, route: Sequence[Sequence[float]]) -> list[list[float]]:
+        points = [(point[0], point[1]) for point in route]
+        if any(not self.area.covers(Point(point)) for point in points):
+            raise ValueError("scan endpoints must lie inside polygon safety margin")
+        result = [list(points[0])]
+        for first, second in zip(points, points[1:]):
+            result.extend(list(point) for point in self._path(first, second)[1:])
+        return result
 
 
 class LatLonToNedConverter:
-    """Convert four latitude/longitude corners to absolute local-NED XY."""
+    """Convert a closed latitude/longitude boundary to absolute local-NED XY."""
 
     _wgs84_semi_major_axis_m = 6_378_137.0
     _wgs84_flattening = 1.0 / 298.257223563
@@ -315,9 +421,11 @@ class LatLonToNedConverter:
         home_lat_lon: Sequence[float],
         home_ned: Sequence[float],
     ) -> list[list[float]]:
-        """Return four ``[north, east]`` points in the UAV local-NED frame."""
-        if len(corners_lat_lon) != 4:
-            raise ValueError("corners_lat_lon must contain exactly four points")
+        """Return n + 1 points, preserving boundary order and the closing point."""
+        if len(corners_lat_lon) < 4:
+            raise ValueError(
+                "corners_lat_lon needs at least three vertices plus a closing point"
+            )
 
         home_latitude, home_longitude = self._parse_lat_lon(
             home_lat_lon, "home_lat_lon"
@@ -370,6 +478,7 @@ class LatLonToNedConverter:
                 ]
             )
 
+        WaypointPlanner().validate_polygon(corners_ned_xy)
         return corners_ned_xy
 
     @staticmethod

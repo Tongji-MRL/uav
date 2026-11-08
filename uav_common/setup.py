@@ -16,7 +16,7 @@ setup(
         ),
         ("share/" + package_name, ["package.xml"]),
     ],
-    install_requires=["setuptools"],
+    install_requires=["setuptools", "shapely>=1.7,<3"],
     zip_safe=True,
     maintainer="RobotX Team",
     maintainer_email="robotx@example.com",

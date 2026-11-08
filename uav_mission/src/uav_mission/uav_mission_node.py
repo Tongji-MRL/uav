@@ -1010,8 +1010,9 @@ class UavMissionNode(Node):
             payload = json.loads(msg.data)
             corners = payload["corners"]
 
+            waypoints = self.waypoint_planner.plan(corners)
             self.map_corners = corners
-            self.map_waypoints = self.waypoint_planner.plan(corners)
+            self.map_waypoints = waypoints
 
             self.get_logger().info(
                 f"Generated MAP waypoints: {self.map_waypoints}"
@@ -1311,10 +1312,15 @@ class UavMissionNode(Node):
                 self._set_error("MAP waypoints are unavailable")
                 return
 
-            self.map_route = self.waypoint_order_planner.order(
-                self.local_position,
-                self.map_waypoints,
-            )
+            try:
+                self.map_route = self.waypoint_order_planner.order(
+                    self.local_position,
+                    self.map_waypoints,
+                    self.map_corners,
+                )
+            except (ValueError, TypeError) as exc:
+                self._set_error(f"MAP route planning failed: {exc}")
+                return
             self.map_route_index = 0
 
             self.get_logger().info(
